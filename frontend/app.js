@@ -1,543 +1,354 @@
+const DEFAULT_API_BASE = "http://127.0.0.1:8003";
+
 const state = {
-    apiBase: localStorage.getItem("chat_api_base") || "http://127.0.0.1:8000",
-    access: localStorage.getItem("chat_access") || "",
-    refresh: localStorage.getItem("chat_refresh") || "",
-    me: JSON.parse(localStorage.getItem("chat_me") || "null"),
-    users: [],
-    selectedUser: null,
-    currentConversationId: null,
-    socket: null,
-    typingTimeout: null,
+  apiBase: localStorage.getItem("chat_api_base") || DEFAULT_API_BASE,
+  access: localStorage.getItem("chat_access") || "",
+  refresh: localStorage.getItem("chat_refresh") || "",
+  me: JSON.parse(localStorage.getItem("chat_me") || "null"),
+  chats: [],
+  activeUserId: Number(localStorage.getItem("chat_selected_user_id")) || null,
+  activeConversationId: Number(localStorage.getItem("chat_conv_id")) || null,
+  socket: null,
+  socketConvId: null,
+  manualSocketClose: false,
+  reconnectTimer: null,
+  renderedMessageIds: new Set(),
+  stickToBottom: true,
 };
 
 const el = {
-    apiBase: document.getElementById("apiBase"),
-    showLoginBtn: document.getElementById("showLoginBtn"),
-    showRegisterBtn: document.getElementById("showRegisterBtn"),
-    logoutBtn: document.getElementById("logoutBtn"),
-    loginForm: document.getElementById("loginForm"),
-    registerForm: document.getElementById("registerForm"),
-    reloadUsersBtn: document.getElementById("reloadUsersBtn"),
-    meInfo: document.getElementById("meInfo"),
-    usersList: document.getElementById("usersList"),
-    chatWithTitle: document.getElementById("chatWithTitle"),
-    chatMeta: document.getElementById("chatMeta"),
-    socketStatus: document.getElementById("socketStatus"),
-    messagesBox: document.getElementById("messagesBox"),
-    typingText: document.getElementById("typingText"),
-    messageForm: document.getElementById("messageForm"),
-    messageInput: document.getElementById("messageInput"),
-    toastWrap: document.getElementById("toastWrap"),
+  authOverlay: document.getElementById("authOverlay"),
+  showLoginBtn: document.getElementById("showLoginBtn"),
+  showRegisterBtn: document.getElementById("showRegisterBtn"),
+  logoutBtn: document.getElementById("logoutBtn"),
+  loginForm: document.getElementById("loginForm"),
+  registerForm: document.getElementById("registerForm"),
+  reloadUsersBtn: document.getElementById("reloadUsersBtn"),
+  usersList: document.getElementById("usersList"),
+  chatWithTitle: document.getElementById("chatWithTitle"),
+  onlineStatus: document.getElementById("onlineStatus"),
+  messagesBox: document.getElementById("messagesBox"),
+  typingText: document.getElementById("typingText"),
+  messageForm: document.getElementById("messageForm"),
+  messageInput: document.getElementById("messageInput"),
+  toastWrap: document.getElementById("toastWrap"),
+  backBtn: document.getElementById("backBtn"),
+  shell: document.querySelector(".app-shell"),
+  chatAvatar: document.getElementById("chatAvatar"),
+  myAvatar: document.getElementById("myAvatar"),
 };
 
 init();
 
 function init() {
-    el.apiBase.value = state.apiBase;
-    bindEvents();
-    if (state.access) {
-        loadMeAndUsers();
-    }
-    updateMePanel();
+  bindEvents();
+  updateMePanel();
+  if (state.access) bootstrapSession();
 }
 
 function bindEvents() {
-    el.apiBase.addEventListener("change", () => {
-        state.apiBase = normalizeBase(el.apiBase.value);
-        el.apiBase.value = state.apiBase;
-        localStorage.setItem("chat_api_base", state.apiBase);
-    });
-
-    el.showLoginBtn.addEventListener("click", () => toggleAuthForm("login"));
-    el.showRegisterBtn.addEventListener("click", () => toggleAuthForm("register"));
-    el.logoutBtn.addEventListener("click", logout);
-
-    el.loginForm.addEventListener("submit", onLogin);
-    el.registerForm.addEventListener("submit", onRegister);
-    el.reloadUsersBtn.addEventListener("click", () => loadUsers());
-
-    el.messageForm.addEventListener("submit", onSendMessage);
-    el.messageInput.addEventListener("input", onTypingInput);
+  el.showLoginBtn.addEventListener("click", () => toggleAuthForm("login"));
+  el.showRegisterBtn.addEventListener("click", () => toggleAuthForm("register"));
+  el.logoutBtn.addEventListener("click", onLogout);
+  el.loginForm.addEventListener("submit", onLogin);
+  el.registerForm.addEventListener("submit", onRegister);
+  el.reloadUsersBtn?.addEventListener("click", () => loadChats({ restoreSelection: true }));
+  el.messageForm.addEventListener("submit", onSendMessage);
+  el.messageInput.addEventListener("input", onTypingInput);
+  el.messagesBox.addEventListener("scroll", onMessagesScroll);
+  el.backBtn.addEventListener("click", () => el.shell.classList.remove("chat-open"));
 }
 
 function toggleAuthForm(mode) {
-    const login = mode === "login";
-    el.loginForm.classList.toggle("d-none", !login);
-    el.registerForm.classList.toggle("d-none", login);
-    el.showLoginBtn.classList.toggle("active", login);
-    el.showRegisterBtn.classList.toggle("active", !login);
+  const isLogin = mode === "login";
+  el.loginForm.classList.toggle("hidden", !isLogin);
+  el.registerForm.classList.toggle("hidden", isLogin);
+  el.showLoginBtn.classList.toggle("active", isLogin);
+  el.showRegisterBtn.classList.toggle("active", !isLogin);
+}
+
+async function bootstrapSession() {
+  try {
+    const meData = await apiCall("/api/auth/me/");
+    state.me = meData?.data || meData;
+    persistAuth();
+    updateMePanel();
+    await loadChats({ restoreSelection: true });
+  } catch (_e) { resetSession(); }
 }
 
 async function onLogin(event) {
-    event.preventDefault();
-    const payload = {
-        username: document.getElementById("loginUsername").value.trim(),
-        password: document.getElementById("loginPassword").value,
-    };
-
-    try {
-        const data = await apiCall("/api/auth/login/", {
-            method: "POST",
-            body: JSON.stringify(payload),
-            noAuth: true,
-        });
-
-        const access = data?.access || data?.tokens?.access || data?.user?.access || "";
-        const refresh = data?.refresh || data?.tokens?.refresh || "";
-        const me = data?.user || data?.data || null;
-
-        if (!access) {
-            throw new Error("Login success but access token missing");
-        }
-
-        state.access = access;
-        state.refresh = refresh;
-        state.me = me;
-        persistAuth();
-        updateMePanel();
-        toast("Login successful");
-        await loadUsers();
-    } catch (error) {
-        toast(error.message || "Login failed");
-    }
+  event.preventDefault();
+  const payload = {
+    username: document.getElementById("loginUsername").value.trim(),
+    password: document.getElementById("loginPassword").value,
+  };
+  try {
+    const data = await apiCall("/api/auth/login/", { method: "POST", body: JSON.stringify(payload), noAuth: true });
+    state.access = data?.access || data?.tokens?.access || data?.user?.access || "";
+    state.refresh = data?.refresh || data?.tokens?.refresh || "";
+    state.me = data?.user || data?.data || null;
+    persistAuth();
+    updateMePanel();
+    toast("Welcome back!");
+    await loadChats({ restoreSelection: true });
+  } catch (e) { toast(e.message, true); }
 }
 
 async function onRegister(event) {
-    event.preventDefault();
-    const payload = {
-        username: document.getElementById("regUsername").value.trim(),
-        email: document.getElementById("regEmail").value.trim(),
-        first_name: document.getElementById("regFirstName").value.trim(),
-        last_name: document.getElementById("regLastName").value.trim(),
-        password: document.getElementById("regPassword").value,
-        password2: document.getElementById("regPassword2").value,
-    };
-
-    try {
-        await apiCall("/api/auth/register/", {
-            method: "POST",
-            body: JSON.stringify(payload),
-            noAuth: true,
-        });
-        toast("Registration complete. Login now.");
-        toggleAuthForm("login");
-    } catch (error) {
-        toast(error.message || "Registration failed");
-    }
+  event.preventDefault();
+  const payload = {
+    username: document.getElementById("regUsername").value.trim(),
+    email: document.getElementById("regEmail").value.trim(),
+    password: document.getElementById("regPassword").value,
+    password2: document.getElementById("regPassword2").value,
+  };
+  try {
+    await apiCall("/api/auth/register/", { method: "POST", body: JSON.stringify(payload), noAuth: true });
+    toast("Account created! Please login.");
+    toggleAuthForm("login");
+  } catch (e) { toast(e.message, true); }
 }
 
-function logout() {
-    closeSocket();
-    state.access = "";
-    state.refresh = "";
-    state.me = null;
-    state.selectedUser = null;
-    state.currentConversationId = null;
-    state.users = [];
-    localStorage.removeItem("chat_access");
-    localStorage.removeItem("chat_refresh");
-    localStorage.removeItem("chat_me");
-    el.usersList.innerHTML = "";
-    el.messagesBox.innerHTML = "";
-    el.chatWithTitle.textContent = "No conversation selected";
-    el.chatMeta.textContent = "Select a user to start chatting";
-    updateMePanel();
-    setSocketStatus(false);
-    toast("Logged out");
+function onLogout() {
+  resetSession();
+  toast("Logged out");
 }
 
-async function loadMeAndUsers() {
-    try {
-        const meData = await apiCall("/api/auth/me/");
-        state.me = meData?.data || meData;
-        persistAuth();
-        updateMePanel();
-        await loadUsers();
-    } catch (_error) {
-        logout();
-    }
+function resetSession() {
+  closeSocket(true);
+  state.access = state.refresh = "";
+  state.me = null;
+  state.chats = [];
+  state.activeUserId = state.activeConversationId = null;
+  state.renderedMessageIds.clear();
+  localStorage.clear();
+  renderChats();
+  updateMePanel();
+  renderEmptyChat();
 }
 
-async function loadUsers() {
-    if (!state.access) {
-        toast("Please login first");
-        return;
-    }
-
-    try {
-        const usersData = await apiCall("/api/users/");
-        state.users = Array.isArray(usersData) ? usersData : (usersData?.data || []);
-        renderUsers();
-        toast("Users loaded");
-    } catch (error) {
-        toast(error.message || "Failed to load users");
-    }
+async function loadChats(options = {}) {
+  if (!state.access) return;
+  try {
+    const data = await apiCall("/api/conversations/");
+    state.chats = Array.isArray(data) ? data : (data?.data || []);
+    renderChats();
+    if (options.restoreSelection && state.activeUserId) restoreSelection();
+  } catch (e) { toast(e.message, true); }
 }
 
-function renderUsers() {
-    el.usersList.innerHTML = "";
+function renderChats() {
+  el.usersList.innerHTML = "";
+  state.chats.forEach(chat => {
+    const user = chat.other_user;
+    if (!user) return;
+    const initials = (user.full_name || user.username).substring(0, 1).toUpperCase();
+    const lastMsg = chat.last_message ? chat.last_message.text : "No messages yet";
+    const time = chat.last_message ? formatServerDate(chat.last_message.created_at) : "";
+    const unread = chat.unread_count || 0;
 
-    if (!state.users.length) {
-        const empty = document.createElement("div");
-        empty.className = "text-soft small";
-        empty.textContent = "No users found";
-        el.usersList.appendChild(empty);
-        return;
-    }
-
-    for (const user of state.users) {
-        const item = document.createElement("button");
-        item.className = "list-group-item user-item";
-        item.innerHTML = `
-      <div class="d-flex justify-content-between align-items-start gap-2">
-        <div>
-          <div class="fw-semibold">${escapeHtml(user.full_name || user.username)}</div>
-          <div class="small text-soft">@${escapeHtml(user.username)}</div>
+    const row = document.createElement("button");
+    row.className = `conv-item ${state.activeConversationId === chat.id ? "active" : ""}`;
+    row.innerHTML = `
+      <div class="avatar">${escapeHtml(initials)}</div>
+      <div class="conv-info">
+        <div class="conv-top">
+          <div class="conv-name">${escapeHtml(user.full_name || user.username)}</div>
+          <div class="conv-time">${escapeHtml(time)}</div>
         </div>
-        <span class="badge text-bg-light">id:${user.id}</span>
+        <div class="conv-bottom">
+          <div class="conv-msg">${escapeHtml(lastMsg)}</div>
+          ${unread > 0 ? `<div class="unread-badge">${unread}</div>` : ""}
+        </div>
       </div>
     `;
-
-        item.addEventListener("click", () => selectUser(user));
-        el.usersList.appendChild(item);
-    }
+    row.onclick = () => openConversation(chat.id, user);
+    el.usersList.appendChild(row);
+  });
 }
 
-async function selectUser(user) {
-    if (!state.access) {
-        toast("Please login first");
-        return;
-    }
-
-    state.selectedUser = user;
-    highlightSelectedUser();
-
-    try {
-        const conv = await apiCall(`/api/conversations/start/${user.id}/`, {
-            method: "POST",
-            body: JSON.stringify({}),
-        });
-
-        state.currentConversationId = conv.id;
-        el.chatWithTitle.textContent = `Chat with ${user.full_name || user.username}`;
-        el.chatMeta.textContent = `Conversation #${conv.id}`;
-
-        await loadMessages(conv.id);
-        connectSocket(conv.id);
-    } catch (error) {
-        toast(error.message || "Failed to open conversation");
-    }
+function restoreSelection() {
+  const found = state.chats.find(c => c.other_user?.id === state.activeUserId);
+  if (found) openConversation(found.id, found.other_user, { restore: true });
 }
 
-function highlightSelectedUser() {
-    const items = el.usersList.querySelectorAll(".user-item");
-    items.forEach((it) => it.classList.remove("active"));
+async function openConversation(convId, user, options = {}) {
+  state.activeUserId = user.id;
+  state.activeConversationId = convId;
+  localStorage.setItem("chat_selected_user_id", String(user.id));
+  localStorage.setItem("chat_conv_id", String(convId));
+  
+  // Clear unread badge locally for immediate UX
+  const chatIdx = state.chats.findIndex(c => c.id === convId);
+  if (chatIdx !== -1) {
+    state.chats[chatIdx].unread_count = 0;
+    renderChats();
+  }
 
-    if (!state.selectedUser) {
-        return;
-    }
+  if (window.innerWidth <= 800) el.shell.classList.add("chat-open");
 
-    const index = state.users.findIndex((u) => u.id === state.selectedUser.id);
-    if (index >= 0 && items[index]) {
-        items[index].classList.add("active");
-    }
+  el.chatWithTitle.textContent = user.full_name || user.username;
+  el.onlineStatus.textContent = "offline";
+  el.onlineStatus.classList.remove("online");
+  el.chatAvatar.textContent = (user.full_name || user.username).substring(0, 1).toUpperCase();
+
+  if (!options.restore) await loadMessages(convId);
+  connectSocket(convId);
 }
 
 async function loadMessages(convId) {
-    try {
-        const messages = await apiCall(`/api/conversations/${convId}/messages/`);
-        el.messagesBox.innerHTML = "";
-        for (const message of messages) {
-            appendMessage({
-                id: message.id,
-                text: message.text,
-                sender_id: message.sender.id,
-                sender_name: message.sender.username,
-                status: message.status,
-                time: formatServerDate(message.created_at),
-            });
-        }
-        scrollToBottom();
-    } catch (error) {
-        toast(error.message || "Failed to load messages");
-    }
-}
-
-function onSendMessage(event) {
-    event.preventDefault();
-    const text = el.messageInput.value.trim();
-
-    if (!text) {
-        return;
-    }
-
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-        toast("Socket not connected");
-        return;
-    }
-
-    state.socket.send(JSON.stringify({
-        action: "send_message",
-        text,
+  try {
+    const list = await apiCall(`/api/conversations/${convId}/messages/`);
+    state.renderedMessageIds.clear();
+    el.messagesBox.innerHTML = "";
+    (Array.isArray(list) ? list : []).forEach(m => appendMessage({
+      id: m.id, text: m.text, sender_id: m.sender?.id, status: m.status, time: formatServerDate(m.created_at)
     }));
-    el.messageInput.value = "";
-}
-
-function onTypingInput() {
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-        return;
-    }
-
-    state.socket.send(JSON.stringify({
-        action: "typing",
-        is_typing: true,
-    }));
-
-    clearTimeout(state.typingTimeout);
-    state.typingTimeout = setTimeout(() => {
-        if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-            state.socket.send(JSON.stringify({
-                action: "typing",
-                is_typing: false,
-            }));
-        }
-    }, 800);
+    scrollToBottom();
+  } catch (e) { toast(e.message, true); }
 }
 
 function connectSocket(convId) {
-    closeSocket();
-
-    if (!state.access) {
-        toast("Missing access token. Please login again.");
-        return;
-    }
-
-    const wsUrl = buildWsUrl(`/ws/chat/${convId}/?token=${encodeURIComponent(state.access)}`);
-    state.socket = new WebSocket(wsUrl);
-
-    state.socket.onopen = () => {
-        setSocketStatus(true);
-        toast("Socket connected");
-    };
-
-    state.socket.onclose = (event) => {
-        setSocketStatus(false);
-        if (event.code === 4401) {
-            toast("WebSocket auth failed. Please login again.");
-        } else if (event.code && event.code !== 1000) {
-            toast(`Socket closed (${event.code})`);
-        }
-    };
-
-    state.socket.onerror = () => {
-        toast("Socket error");
-    };
-
-    state.socket.onmessage = (event) => {
-        try {
-            const payload = JSON.parse(event.data);
-            handleSocketPayload(payload);
-        } catch (_error) {
-            toast("Invalid socket payload");
-        }
-    };
+  if (!state.access) return;
+  if (state.socket?.readyState < 2 && state.socketConvId === convId) {
+    if (state.socket.readyState === 1) state.socket.send(jsonStr({ action: "mark_read" }));
+    return;
+  }
+  if (state.socket) closeSocket(true);
+  state.socketConvId = convId;
+  const ws = new WebSocket(buildWsUrl(`/ws/chat/${convId}/?token=${encodeURIComponent(state.access)}`));
+  state.socket = ws;
+  
+  ws.onopen = () => {
+    ws.send(jsonStr({ action: "mark_read" }));
+    // Refresh chats after a short delay to ensure DB is updated
+    setTimeout(() => loadChats(), 500);
+  };
+  ws.onmessage = (e) => handleSocketPayload(JSON.parse(e.data));
+  ws.onclose = () => { 
+    if (!state.manualSocketClose) setTimeout(() => connectSocket(convId), 3000); 
+  };
 }
 
-function closeSocket() {
-    if (state.socket) {
-        state.socket.close();
-        state.socket = null;
-    }
+function closeSocket(manual = true) {
+  state.manualSocketClose = manual;
+  state.socket?.close();
+  state.socket = null;
 }
 
-function handleSocketPayload(payload) {
-    if (payload.type === "message") {
-        appendMessage(payload);
-        scrollToBottom();
-
-        const isFromOther = payload.sender_id !== state.me?.id;
-        if (isFromOther && state.socket?.readyState === WebSocket.OPEN) {
-            state.socket.send(JSON.stringify({
-                action: "seen",
-                message_id: payload.id,
-            }));
-        }
-        return;
+function handleSocketPayload(p) {
+  if (p.type === "message") {
+    appendMessage(p);
+    if (state.stickToBottom) scrollToBottom();
+    if (p.sender_id !== state.me?.id) {
+      state.socket.send(jsonStr({ action: "seen", message_id: p.id }));
+      state.socket.send(jsonStr({ action: "mark_read" }));
     }
-
-    if (payload.type === "typing") {
-        if (payload.is_typing) {
-            el.typingText.textContent = "The other user is typing...";
-        } else {
-            el.typingText.textContent = "";
-        }
-        return;
+    loadChats();
+  } else if (p.type === "typing") {
+    el.typingText.textContent = p.is_typing ? "typing..." : "";
+  } else if (p.type === "seen") {
+    updateSeenStatus(p.message_id);
+  } else if (p.type === "status") {
+    if (p.user_id !== state.me?.id) {
+      const isOnline = p.status === "online";
+      el.onlineStatus.textContent = isOnline ? "online" : "offline";
+      el.onlineStatus.classList.toggle("online", isOnline);
     }
-
-    if (payload.type === "seen") {
-        updateSeenStatus(payload.message_id);
-    }
+  }
 }
 
-function appendMessage(message) {
-    const mine = message.sender_id === state.me?.id;
-    const item = document.createElement("div");
-    item.className = `message-bubble ${mine ? "mine" : "other"}`;
-    item.dataset.messageId = String(message.id || "");
+function onSendMessage(e) {
+  e.preventDefault();
+  const text = el.messageInput.value.trim();
+  if (!text || state.socket?.readyState !== 1) return;
+  state.socket.send(jsonStr({ action: "send_message", text }));
+  el.messageInput.value = "";
+}
 
-    const senderLabel = mine ? "You" : message.sender_name || "User";
-    item.innerHTML = `
-    <div>${escapeHtml(message.text || "")}</div>
-    <div class="meta">
-      ${escapeHtml(senderLabel)} • ${escapeHtml(message.time || "")}
-      <span class="status-tag">${escapeHtml(message.status || "")}</span>
+function onTypingInput() {
+  if (state.socket?.readyState !== 1) return;
+  state.socket.send(jsonStr({ action: "typing", is_typing: true }));
+  clearTimeout(state.typingTimer);
+  state.typingTimer = setTimeout(() => state.socket?.send(jsonStr({ action: "typing", is_typing: false })), 1500);
+}
+
+function appendMessage(m) {
+  const id = Number(m.id);
+  if (id && state.renderedMessageIds.has(id)) return;
+  if (id) state.renderedMessageIds.add(id);
+  const mine = m.sender_id === state.me?.id;
+  const row = document.createElement("div");
+  row.className = `message ${mine ? "mine" : "other"}`;
+  row.dataset.messageId = String(id || "");
+  const time = m.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  row.innerHTML = `
+    <div class="msg-text">${escapeHtml(m.text || "")}</div>
+    <div class="msg-meta">
+      <span>${escapeHtml(time)}</span>
+      ${mine ? `<span class="status-icon" style="color: ${m.status === 'seen' ? 'var(--seen-blue)' : 'inherit'}">${m.status === 'seen' ? '✓✓' : '✓'}</span>` : ""}
     </div>
   `;
-
-    el.messagesBox.appendChild(item);
+  el.messagesBox.appendChild(row);
 }
 
-function updateSeenStatus(messageId) {
-    const bubble = el.messagesBox.querySelector(`[data-message-id='${messageId}']`);
-    if (!bubble) {
-        return;
-    }
-    const tag = bubble.querySelector(".status-tag");
-    if (tag) {
-        tag.textContent = "seen";
-    }
+function onMessagesScroll() {
+  const { scrollTop, scrollHeight, clientHeight } = el.messagesBox;
+  state.stickToBottom = (scrollHeight - scrollTop - clientHeight) < 80;
 }
 
-function setSocketStatus(isConnected) {
-    el.socketStatus.textContent = isConnected ? "Connected" : "Disconnected";
-    el.socketStatus.className = `badge ${isConnected ? "text-bg-success" : "text-bg-secondary"}`;
+// Throttled chat loading to prevent flickering when many seen events arrive
+let loadChatsTimeout = null;
+function throttledLoadChats() {
+  if (loadChatsTimeout) return;
+  loadChatsTimeout = setTimeout(() => {
+    loadChats();
+    loadChatsTimeout = null;
+  }, 300);
+}
+
+function updateSeenStatus(mid) {
+  const icon = el.messagesBox.querySelector(`[data-message-id='${mid}'] .status-icon`);
+  if (icon) { 
+    icon.textContent = "✓✓"; 
+    icon.style.color = "var(--seen-blue)"; 
+  }
+  throttledLoadChats();
+}
+
+function renderEmptyChat() {
+  el.messagesBox.innerHTML = `
+    <div class="welcome-screen">
+      <div class="welcome-center">
+        <h1>WhatsApp Web</h1>
+        <p>Send and receive messages without keeping your phone online.</p>
+      </div>
+    </div>
+  `;
+  el.onlineStatus.textContent = "";
+  el.onlineStatus.classList.remove("online");
 }
 
 function updateMePanel() {
-    if (!state.me) {
-        el.meInfo.textContent = "Not logged in";
-        return;
-    }
-
-    const text = `${state.me.username} (id:${state.me.id})`;
-    el.meInfo.textContent = text;
+  const loggedIn = !!state.me;
+  el.authOverlay.classList.toggle("hidden", loggedIn);
+  if (loggedIn) el.myAvatar.textContent = state.me.username.substring(0, 1).toUpperCase();
 }
 
 async function apiCall(path, options = {}) {
-    const headers = {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-    };
-
-    if (!options.noAuth && state.access) {
-        headers.Authorization = `Bearer ${state.access}`;
-    }
-
-    const response = await fetch(`${normalizeBase(state.apiBase)}${path}`, {
-        method: options.method || "GET",
-        headers,
-        body: options.body,
-    });
-
-    const data = await safeJson(response);
-
-    if (!response.ok) {
-        const message =
-            data?.detail ||
-            data?.error ||
-            stringifyValidationErrors(data) ||
-            `Request failed (${response.status})`;
-        throw new Error(message);
-    }
-
-    return data;
+  const headers = { "Content-Type": "application/json", ...options.headers };
+  if (!options.noAuth && state.access) headers.Authorization = `Bearer ${state.access}`;
+  const res = await fetch(`${state.apiBase}${path}`, { method: options.method || "GET", headers, body: options.body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || data.error || "Request failed");
+  return data;
 }
 
-function buildWsUrl(path) {
-    const url = new URL(normalizeBase(state.apiBase));
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    return `${url.origin}${path}`;
-}
-
-function persistAuth() {
-    localStorage.setItem("chat_access", state.access || "");
-    localStorage.setItem("chat_refresh", state.refresh || "");
-    localStorage.setItem("chat_me", JSON.stringify(state.me || null));
-}
-
-function normalizeBase(value) {
-    return String(value || "").trim().replace(/\/+$/, "");
-}
-
-function formatServerDate(isoDate) {
-    if (!isoDate) {
-        return "";
-    }
-    const date = new Date(isoDate);
-    if (Number.isNaN(date.getTime())) {
-        return "";
-    }
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function toast(text) {
-    const node = document.createElement("div");
-    node.className = "toast-lite";
-    node.textContent = text;
-    el.toastWrap.appendChild(node);
-
-    setTimeout(() => {
-        node.remove();
-    }, 2600);
-}
-
-function scrollToBottom() {
-    el.messagesBox.scrollTop = el.messagesBox.scrollHeight;
-}
-
-function stringifyValidationErrors(data) {
-    if (!data || typeof data !== "object") {
-        return "";
-    }
-
-    const first = Object.entries(data)[0];
-    if (!first) {
-        return "";
-    }
-
-    const [field, value] = first;
-    if (Array.isArray(value) && value.length) {
-        return `${field}: ${value[0]}`;
-    }
-
-    if (typeof value === "string") {
-        return `${field}: ${value}`;
-    }
-
-    return "";
-}
-
-function safeJson(response) {
-    return response
-        .text()
-        .then((text) => {
-            if (!text) {
-                return {};
-            }
-            try {
-                return JSON.parse(text);
-            } catch (_error) {
-                return {};
-            }
-        })
-        .catch(() => ({}));
-}
-
-function escapeHtml(value) {
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-}
+function buildWsUrl(p) { const u = new URL(state.apiBase); u.protocol = u.protocol === "https:" ? "wss:" : "ws:"; return `${u.origin}${p}`; }
+function persistAuth() { localStorage.setItem("chat_access", state.access); localStorage.setItem("chat_refresh", state.refresh); localStorage.setItem("chat_me", JSON.stringify(state.me)); }
+function formatServerDate(d) { return d ? new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""; }
+function scrollToBottom() { el.messagesBox.scrollTop = el.messagesBox.scrollHeight; }
+function toast(t, e = false) { const i = document.createElement("div"); i.className = `toast${e ? " error" : ""}`; i.textContent = t; el.toastWrap.appendChild(i); setTimeout(() => i.remove(), 3000); }
+function escapeHtml(v) { return String(v).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
+function jsonStr(o) { return JSON.stringify(o); }

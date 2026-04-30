@@ -15,36 +15,54 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
+        self.conversation = await self.get_conversation()
+        if not self.conversation:
+            await self.close()
+            return
+
         await self.channel_layer.group_add(self.room, self.channel_name)
         await self.accept()
 
+        # Broadcast online status
+        await self.channel_layer.group_send(self.room, {
+            'type': 'user_status_event',
+            'user_id': self.user.id,
+            'status': 'online',
+        })
+
     async def disconnect(self, code):
-        await self.channel_layer.group_discard(self.room, self.channel_name)
+        if hasattr(self, 'room'):
+            # Broadcast offline status
+            await self.channel_layer.group_send(self.room, {
+                'type': 'user_status_event',
+                'user_id': self.user.id,
+                'status': 'offline',
+            })
+            await self.channel_layer.group_discard(self.room, self.channel_name)
 
     async def receive(self, text_data):
-        data = json.loads(text_data)
+        try:
+            data = json.loads(text_data)
+        except:
+            return
+
         action = data.get('action')
 
         if action == 'send_message':
             await self.handle_send(data)
-
         elif action == 'typing':
             await self.handle_typing(data)
-
         elif action == 'seen':
             await self.handle_seen(data)
+        elif action == 'mark_read':
+            await self.handle_mark_read()
 
     # ── Handlers ───────────────────────────────────
 
     async def handle_send(self, data):
         text = data.get('text', '').strip()
-        if not text:
-            return
-
-        # Save to DB with status 'delivered'
+        if not text: return
         msg = await self.save_message(text)
-
-        # Broadcast to both users in the room
         await self.channel_layer.group_send(self.room, {
             'type': 'chat_message',
             'id': msg.id,
@@ -64,14 +82,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def handle_seen(self, data):
         msg_id = data.get('message_id')
+        if not msg_id: return
         await self.mark_seen(msg_id)
-
-        # Notify sender that message was seen
         await self.channel_layer.group_send(self.room, {
             'type': 'seen_event',
             'message_id': msg_id,
             'seen_by': self.user.id,
         })
+
+    async def handle_mark_read(self):
+        mids = await self.db_mark_all_seen()
+        for mid in mids:
+            await self.channel_layer.group_send(self.room, {
+                'type': 'seen_event',
+                'message_id': mid,
+                'seen_by': self.user.id,
+            })
 
     # ── Broadcast Receivers ────────────────────────
 
@@ -87,7 +113,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def typing_event(self, event):
-        # Don't send typing back to the typer
         if event['sender_id'] != self.user.id:
             await self.send(json.dumps({
                 'type': 'typing',
@@ -102,13 +127,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'seen_by': event.get('seen_by'),
         }))
 
+    async def user_status_event(self, event):
+        await self.send(json.dumps({
+            'type': 'status',
+            'user_id': event.get('user_id'),
+            'status': event.get('status'),
+        }))
+
     # ── DB Helpers ─────────────────────────────────
 
     @database_sync_to_async
+    def get_conversation(self):
+        return Conversation.objects.filter(id=self.conv_id).first()
+
+    @database_sync_to_async
     def save_message(self, text):
-        conv = Conversation.objects.get(id=self.conv_id)
         return Message.objects.create(
-            conversation=conv,
+            conversation=self.conversation,
             sender=self.user,
             text=text,
             status='delivered'
@@ -116,4 +151,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def mark_seen(self, msg_id):
-        Message.objects.filter(id=msg_id).update(status='seen')
+        Message.objects.filter(id=msg_id).exclude(sender=self.user).update(status='seen')
+
+    @database_sync_to_async
+    def db_mark_all_seen(self):
+        msgs = Message.objects.filter(
+            conversation=self.conversation, 
+            status='delivered'
+        ).exclude(sender=self.user)
+        ids = list(msgs.values_list('id', flat=True))
+        msgs.update(status='seen')
+        return ids

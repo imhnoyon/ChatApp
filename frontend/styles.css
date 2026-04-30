@@ -264,7 +264,7 @@ html, body {
 }
 
 .conv-time {
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   color: var(--text-muted);
 }
 
@@ -381,12 +381,13 @@ html, body {
 /* Bubbles */
 .message {
   max-width: 65%;
-  padding: 6px 7px 8px 9px;
+  padding: 6px 7px 5px 9px;
   border-radius: 8px;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
   position: relative;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   box-shadow: 0 1px 0.5px rgba(0,0,0,0.15);
+  line-height: 1.3;
 }
 
 .message.mine {
@@ -430,19 +431,19 @@ html, body {
 }
 
 .msg-text {
-  line-height: 1.4;
   word-break: break-word;
-  margin-right: 45px;
+  margin-bottom: 4px;
 }
 
 .msg-meta {
-  font-size: 0.65rem;
-  color: rgba(255,255,255,0.5);
+  font-size: 0.58rem;
+  color: rgba(255, 255, 255, 0.45);
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 4px;
-  margin-top: -6px;
+  gap: 3px;
+  margin-bottom: -2px;
+  margin-right: -2px;
 }
 
 .typing-indicator {

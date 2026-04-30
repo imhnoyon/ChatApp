@@ -1,4 +1,5 @@
 import json
+from django.utils import timezone
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import User
@@ -56,6 +57,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.handle_seen(data)
         elif action == 'mark_read':
             await self.handle_mark_read()
+        elif action == 'presence_ping':
+            # Ask others to announce themselves
+            await self.channel_layer.group_send(self.room, {
+                'type': 'presence_query_event',
+                'sender_id': self.user.id,
+            })
+        elif action == 'presence_pong':
+            # Announce myself explicitly
+            await self.channel_layer.group_send(self.room, {
+                'type': 'user_status_event',
+                'user_id': self.user.id,
+                'status': 'online',
+            })
 
     # ── Handlers ───────────────────────────────────
 
@@ -70,7 +84,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'sender_id': self.user.id,
             'sender_name': self.user.username,
             'status': 'delivered',
-            'time': msg.created_at.strftime('%H:%M'),
+            'created_at': timezone.localtime(msg.created_at).isoformat(),
         })
 
     async def handle_typing(self, data):
@@ -109,7 +123,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'sender_id': event.get('sender_id'),
             'sender_name': event.get('sender_name'),
             'status': event.get('status'),
-            'time': event.get('time'),
+            'created_at': event.get('created_at'),
         }))
 
     async def typing_event(self, event):
@@ -133,6 +147,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'user_id': event.get('user_id'),
             'status': event.get('status'),
         }))
+
+    async def presence_query_event(self, event):
+        # Don't ask myself
+        if event['sender_id'] != self.user.id:
+            await self.send(json.dumps({
+                'type': 'presence_query',
+            }))
 
     # ── DB Helpers ─────────────────────────────────
 

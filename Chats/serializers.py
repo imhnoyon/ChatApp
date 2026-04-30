@@ -1,3 +1,5 @@
+from django.utils import timezone
+
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import Conversation, Message
@@ -9,10 +11,13 @@ class UserSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
-
+    created_at = serializers.SerializerMethodField()    
     class Meta:
         model = Message
         fields = ['id', 'sender', 'text', 'status', 'created_at']
+        
+    def get_created_at(self, obj):
+        return timezone.localtime(obj.created_at).isoformat()
 
 class ConversationSerializer(serializers.ModelSerializer):
     other_user = serializers.SerializerMethodField()

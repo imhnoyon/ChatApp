@@ -3,7 +3,7 @@ from django.utils import timezone
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import User
-from .models import Conversation, Message
+from .models import Conversation, Message, Reaction
 
 class ChatConsumer(AsyncWebsocketConsumer):
 
@@ -24,7 +24,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room, self.channel_name)
         await self.accept()
 
-        # Broadcast online status
         await self.channel_layer.group_send(self.room, {
             'type': 'user_status_event',
             'user_id': self.user.id,
@@ -33,7 +32,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, code):
         if hasattr(self, 'room'):
-            # Broadcast offline status
             await self.channel_layer.group_send(self.room, {
                 'type': 'user_status_event',
                 'user_id': self.user.id,
@@ -57,21 +55,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.handle_seen(data)
         elif action == 'mark_read':
             await self.handle_mark_read()
+        elif action == 'react':
+            await self.handle_react(data)
         elif action == 'presence_ping':
-            # Ask others to announce themselves
             await self.channel_layer.group_send(self.room, {
                 'type': 'presence_query_event',
                 'sender_id': self.user.id,
             })
         elif action == 'presence_pong':
-            # Announce myself explicitly
             await self.channel_layer.group_send(self.room, {
                 'type': 'user_status_event',
                 'user_id': self.user.id,
                 'status': 'online',
             })
-
-    # ── Handlers ───────────────────────────────────
 
     async def handle_send(self, data):
         text = data.get('text', '').strip()
@@ -113,6 +109,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'seen_by': self.user.id,
             })
 
+    async def handle_react(self, data):
+        msg_id = data.get('message_id')
+        emoji = data.get('emoji')
+        if not msg_id or not emoji: return
+        
+        reaction_data = await self.db_add_reaction(msg_id, emoji)
+        if reaction_data:
+            await self.channel_layer.group_send(self.room, {
+                'type': 'reaction_event',
+                'message_id': msg_id,
+                'reactions': reaction_data
+            })
+
     # ── Broadcast Receivers ────────────────────────
 
     async def chat_message(self, event):
@@ -124,6 +133,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'sender_name': event.get('sender_name'),
             'status': event.get('status'),
             'created_at': event.get('created_at'),
+            'reactions': []
         }))
 
     async def typing_event(self, event):
@@ -141,6 +151,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'seen_by': event.get('seen_by'),
         }))
 
+    async def reaction_event(self, event):
+        await self.send(json.dumps({
+            'type': 'reaction',
+            'message_id': event.get('message_id'),
+            'reactions': event.get('reactions')
+        }))
+
     async def user_status_event(self, event):
         await self.send(json.dumps({
             'type': 'status',
@@ -149,11 +166,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def presence_query_event(self, event):
-        # Don't ask myself
         if event['sender_id'] != self.user.id:
-            await self.send(json.dumps({
-                'type': 'presence_query',
-            }))
+            await self.send(json.dumps({'type': 'presence_query'}))
 
     # ── DB Helpers ─────────────────────────────────
 
@@ -176,10 +190,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def db_mark_all_seen(self):
-        msgs = Message.objects.filter(
-            conversation=self.conversation, 
-            status='delivered'
-        ).exclude(sender=self.user)
+        msgs = Message.objects.filter(conversation=self.conversation, status='delivered').exclude(sender=self.user)
         ids = list(msgs.values_list('id', flat=True))
         msgs.update(status='seen')
         return ids
+
+    @database_sync_to_async
+    def db_add_reaction(self, msg_id, emoji):
+        try:
+            msg = Message.objects.get(id=msg_id)
+            # Toggle reaction: if same emoji, remove it. If different, update it.
+            existing = Reaction.objects.filter(message=msg, user=self.user).first()
+            if existing:
+                if existing.emoji == emoji:
+                    existing.delete()
+                else:
+                    existing.emoji = emoji
+                    existing.save()
+            else:
+                Reaction.objects.create(message=msg, user=self.user, emoji=emoji)
+            
+            # Return fresh list of reactions for this message
+            res = []
+            for r in msg.reactions.all():
+                res.append({'emoji': r.emoji, 'user': r.user.id, 'username': r.user.username})
+            return res
+        except:
+            return None

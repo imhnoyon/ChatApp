@@ -388,6 +388,99 @@ html, body {
   font-size: 0.95rem;
   box-shadow: 0 1px 0.5px rgba(0,0,0,0.15);
   line-height: 1.3;
+  display: flex;
+  flex-direction: column;
+}
+
+.message:hover .react-trigger {
+  opacity: 1;
+}
+
+.react-trigger {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  background: var(--panel-header);
+  border: 1px solid var(--line-border);
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 10;
+  color: var(--text-muted);
+}
+
+.message.other .react-trigger {
+  right: auto;
+  left: -12px;
+}
+
+.reaction-picker {
+  position: absolute;
+  top: -45px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-header);
+  border-radius: 20px;
+  padding: 5px 10px;
+  display: flex;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 100;
+  border: 1px solid var(--line-border);
+  visibility: hidden;
+  opacity: 0;
+  transition: 0.2s;
+}
+
+.reaction-picker.show {
+  visibility: visible;
+  opacity: 1;
+  top: -55px;
+}
+
+.react-emoji {
+  cursor: pointer;
+  font-size: 1.2rem;
+  transition: transform 0.1s;
+}
+
+.react-emoji:hover {
+  transform: scale(1.3);
+}
+
+.reactions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.reaction-badge {
+  background: var(--panel-header);
+  border: 1px solid var(--line-border);
+  border-radius: 12px;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.reaction-badge:hover {
+  background: var(--panel-hover);
+}
+
+.reaction-badge.mine {
+  background: rgba(0, 168, 132, 0.15);
+  border-color: var(--brand-green);
 }
 
 .message.mine {

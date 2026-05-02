@@ -39,7 +39,8 @@ class Message(models.Model):
         ordering = ['created_at']
 
     def __str__(self):
-        return f"{self.sender.username}: {self.text[:30]}"
+        text_preview = (self.text or '')[:30]
+        return f"{self.sender.username}: {text_preview}"
 
 
 class Reaction(models.Model):

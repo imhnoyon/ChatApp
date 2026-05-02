@@ -25,7 +25,12 @@ SECRET_KEY = 'django-insecure-#k%0r+h!301xj&@l1pwt@a%4wa7k!blq3nmta^2-1bckqy1440
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    "localhost",
+    "127.0.0.1",
+    "10.10.12.22",
+    "rs0hfx59-8003.asse.devtunnels.ms",
+]
 
 
 # Application definition
@@ -136,9 +141,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'bn'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Dhaka'
 
 USE_I18N = True
 
@@ -154,12 +159,10 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     'http://10.10.12.59:5173',
+    
 ]
 
 CORS_ALLOW_CREDENTIALS = True
-
-USE_TZ = True
-TIME_ZONE = 'Asia/Dhaka'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR.parent / 'chat_media_data'

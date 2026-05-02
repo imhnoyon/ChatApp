@@ -61,3 +61,51 @@ class ConversationAPIView(APIView):
             return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+from rest_framework.parsers import MultiPartParser, FormParser
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from django.utils import timezone
+
+class FileUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, conv_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+            
+            msg_type = request.data.get('message_type', 'image')
+            file_obj = request.FILES.get('file')
+            
+            if not file_obj:
+                return Response({'error': 'No file uploaded'}, status=status.HTTP_400_BAD_REQUEST)
+
+            msg = Message.objects.create(
+                conversation=conversation,
+                sender=request.user,
+                message_type=msg_type,
+                file=file_obj,
+                status='delivered'
+            )
+
+            serializer = MessageSerializer(msg)
+            data = serializer.data
+            
+            # Broadcast to the room via Channel Layer
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'chat_message_media',
+                    'message': data
+                }
+            )
+
+            return Response(data, status=status.HTTP_201_CREATED)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

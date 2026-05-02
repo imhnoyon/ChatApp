@@ -160,3 +160,6 @@ CORS_ALLOW_CREDENTIALS = True
 
 USE_TZ = True
 TIME_ZONE = 'Asia/Dhaka'
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR.parent / 'chat_media_data'

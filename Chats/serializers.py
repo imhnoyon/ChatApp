@@ -21,7 +21,7 @@ class MessageSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'text', 'status', 'created_at', 'reactions']
+        fields = ['id', 'sender', 'text', 'status', 'created_at', 'reactions', 'file', 'message_type']
         
     def get_created_at(self, obj):
         return timezone.localtime(obj.created_at).isoformat()

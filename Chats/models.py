@@ -19,11 +19,19 @@ class Message(models.Model):
         ('seen', 'Seen'),
     ]
 
+    MESSAGE_TYPES = [
+        ('text', 'Text'),
+        ('image', 'Image'),
+        ('voice', 'Voice'),
+    ]
+
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name='messages'
     )
     sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
-    text = models.TextField()
+    text = models.TextField(blank=True, null=True)
+    file = models.FileField(upload_to='chat_files/', blank=True, null=True)
+    message_type = models.CharField(max_length=10, choices=MESSAGE_TYPES, default='text')
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='sending')
     created_at = models.DateTimeField(auto_now_add=True)
 

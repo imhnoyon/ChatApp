@@ -14,6 +14,8 @@ const state = {
   reconnectTimer: null,
   renderedMessageIds: new Set(),
   stickToBottom: true,
+  mediaRecorder: null,
+  audioChunks: [],
 };
 
 const el = {
@@ -36,6 +38,10 @@ const el = {
   shell: document.querySelector(".app-shell"),
   chatAvatar: document.getElementById("chatAvatar"),
   myAvatar: document.getElementById("myAvatar"),
+  plusBtn: document.getElementById("plusBtn"),
+  attachMenu: document.getElementById("attachMenu"),
+  imgInput: document.getElementById("imgInput"),
+  voiceBtn: document.getElementById("voiceBtn"),
 };
 
 init();
@@ -57,6 +63,21 @@ function bindEvents() {
   el.messageInput.addEventListener("input", onTypingInput);
   el.messagesBox.addEventListener("scroll", onMessagesScroll);
   el.backBtn.addEventListener("click", () => el.shell.classList.remove("chat-open"));
+
+  // Attachments
+  el.plusBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    el.attachMenu.classList.toggle("show");
+  });
+  document.addEventListener("click", () => el.attachMenu.classList.remove("show"));
+
+  el.imgInput.addEventListener("change", onImageSelect);
+
+  // Voice recording (Press and hold)
+  el.voiceBtn.addEventListener("mousedown", startVoiceRecording);
+  el.voiceBtn.addEventListener("mouseup", stopVoiceRecording);
+  el.voiceBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startVoiceRecording(); });
+  el.voiceBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopVoiceRecording(); });
 }
 
 function toggleAuthForm(mode) {
@@ -144,7 +165,14 @@ function renderChats() {
     const user = chat.other_user;
     if (!user) return;
     const initials = (user.full_name || user.username).substring(0, 1).toUpperCase();
-    const lastMsg = chat.last_message ? chat.last_message.text : "No messages yet";
+    
+    let lastMsg = "No messages yet";
+    if (chat.last_message) {
+      if (chat.last_message.message_type === 'image') lastMsg = "📷 Photo";
+      else if (chat.last_message.message_type === 'voice') lastMsg = "🎤 Voice message";
+      else lastMsg = chat.last_message.text || "";
+    }
+
     const time = chat.last_message ? formatMessageTime(chat.last_message.created_at) : "";
     const unread = chat.unread_count || 0;
 
@@ -236,6 +264,9 @@ function closeSocket(manual = true) {
 
 function handleSocketPayload(p) {
   if (p.type === "message") {
+    const opt = el.messagesBox.querySelector(".message.optimistic");
+    if (opt) opt.remove();
+    
     appendMessage(p);
     if (state.stickToBottom) scrollToBottom();
     if (p.sender_id !== state.me?.id) {
@@ -282,9 +313,23 @@ function appendMessage(m) {
   if (id) state.renderedMessageIds.add(id);
   const mine = (m.sender_id || m.sender?.id) === state.me?.id;
   const row = document.createElement("div");
-  row.className = `message ${mine ? "mine" : "other"}`;
+  row.className = `message ${mine ? "mine" : "other"} ${m.optimistic ? "optimistic" : ""}`;
   row.dataset.messageId = String(id || "");
   const time = formatMessageTime(m.created_at || m.time);
+
+  let fileUrl = m.file;
+  if (fileUrl && !fileUrl.startsWith("http") && !fileUrl.startsWith("blob:")) {
+    fileUrl = state.apiBase + fileUrl;
+  }
+
+  let contentHtml = "";
+  if (m.message_type === "image") {
+    contentHtml = `<img src="${fileUrl}" class="msg-image" ${m.optimistic ? 'style="opacity: 0.5"' : `onclick="window.open('${fileUrl}', '_blank')"`} />`;
+  } else if (m.message_type === "voice") {
+    contentHtml = `<audio src="${fileUrl}" controls class="msg-audio"></audio>`;
+  } else {
+    contentHtml = `<div class="msg-text">${escapeHtml(m.text || "")}</div>`;
+  }
   
   row.innerHTML = `
     <div class="react-trigger">
@@ -298,7 +343,7 @@ function appendMessage(m) {
       <span class="react-emoji" data-emoji="😢">😢</span>
       <span class="react-emoji" data-emoji="🙏">🙏</span>
     </div>
-    <div class="msg-text">${escapeHtml(m.text || "")}</div>
+    ${contentHtml}
     <div class="reactions-list"></div>
     <div class="msg-meta">
       <span>${escapeHtml(time)}</span>
@@ -306,23 +351,18 @@ function appendMessage(m) {
     </div>
   `;
 
-  const trigger = row.querySelector(".react-trigger");
-  const picker = row.querySelector(".reaction-picker");
-  trigger.onclick = (e) => {
-    e.stopPropagation();
-    picker.classList.toggle("show");
-  };
+  if (!m.optimistic) {
+    const trigger = row.querySelector(".react-trigger");
+    const picker = row.querySelector(".reaction-picker");
+    trigger.onclick = (e) => { e.stopPropagation(); picker.classList.toggle("show"); };
 
-  row.querySelectorAll(".react-emoji").forEach(em => {
-    em.onclick = () => {
-      if (state.socket?.readyState === 1) {
-        state.socket.send(jsonStr({ action: "react", message_id: id, emoji: em.dataset.emoji }));
-      }
-      picker.classList.remove("show");
-    };
-  });
-
-  document.addEventListener("click", () => picker.classList.remove("show"));
+    row.querySelectorAll(".react-emoji").forEach(em => {
+      em.onclick = () => {
+        if (state.socket?.readyState === 1) state.socket.send(jsonStr({ action: "react", message_id: id, emoji: em.dataset.emoji }));
+        picker.classList.remove("show");
+      };
+    });
+  }
 
   renderReactions(row, m.reactions || []);
   el.messagesBox.appendChild(row);
@@ -332,26 +372,111 @@ function renderReactions(msgEl, reactions) {
   const list = msgEl.querySelector(".reactions-list");
   list.innerHTML = "";
   if (!reactions || !reactions.length) return;
-  
-  // Group by emoji and track if "I" reacted
   const groups = {};
   reactions.forEach(r => {
     if (!groups[r.emoji]) groups[r.emoji] = { count: 0, me: false };
     groups[r.emoji].count++;
-    if (r.user === state.me?.id) groups[r.emoji].me = true;
+    if ((r.user === state.me?.id) || (r.user?.id === state.me?.id)) groups[r.emoji].me = true;
   });
-  
   Object.entries(groups).forEach(([emoji, data]) => {
     const badge = document.createElement("div");
     badge.className = `reaction-badge ${data.me ? 'mine' : ''}`;
     badge.innerHTML = `<span>${emoji}</span>${data.count > 1 ? `<span>${data.count}</span>` : ""}`;
     badge.onclick = () => {
-      if (state.socket?.readyState === 1) {
-        state.socket.send(jsonStr({ action: "react", message_id: msgEl.dataset.messageId, emoji }));
-      }
+      if (state.socket?.readyState === 1) state.socket.send(jsonStr({ action: "react", message_id: msgEl.dataset.messageId, emoji }));
     };
     list.appendChild(badge);
   });
+}
+
+async function onImageSelect(e) {
+  e.preventDefault();
+  const file = e.target.files[0];
+  if (!file || !state.activeConversationId) return;
+
+  const tempUrl = URL.createObjectURL(file);
+  appendMessage({
+    id: 0,
+    sender_id: state.me?.id,
+    message_type: "image",
+    file: tempUrl,
+    created_at: new Date().toISOString(),
+    status: "sending",
+    optimistic: true
+  });
+  scrollToBottom();
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("message_type", "image");
+  try {
+    await uploadFile(formData);
+    el.imgInput.value = "";
+  } catch (err) { 
+    toast(err.message, true); 
+    const opt = el.messagesBox.querySelector(".message.optimistic");
+    if (opt) opt.remove();
+  }
+}
+
+async function startVoiceRecording() {
+  if (!state.activeConversationId) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.mediaRecorder = new MediaRecorder(stream);
+    state.audioChunks = [];
+    state.mediaRecorder.ondataavailable = (e) => state.audioChunks.push(e.data);
+    state.mediaRecorder.onstop = async () => {
+      if (state.audioChunks.length === 0) return;
+      const blob = new Blob(state.audioChunks, { type: "audio/ogg; codecs=opus" });
+      const formData = new FormData();
+      formData.append("file", blob, "voice.ogg");
+      formData.append("message_type", "voice");
+      
+      // Optimistic UI for voice
+      const tempUrl = URL.createObjectURL(blob);
+      appendMessage({
+        id: 0,
+        sender_id: state.me?.id,
+        message_type: "voice",
+        file: tempUrl,
+        created_at: new Date().toISOString(),
+        status: "sending",
+        optimistic: true
+      });
+      scrollToBottom();
+
+      try { await uploadFile(formData); } catch (err) { 
+        toast(err.message, true); 
+        const opt = el.messagesBox.querySelector(".message.optimistic");
+        if (opt) opt.remove();
+      }
+      stream.getTracks().forEach(t => t.stop());
+    };
+    state.mediaRecorder.start();
+    el.voiceBtn.style.color = "#f44336";
+    el.voiceBtn.classList.add("recording");
+    toast("Recording started...");
+  } catch (err) { toast("Microphone access denied", true); }
+}
+
+function stopVoiceRecording() {
+  if (state.mediaRecorder && state.mediaRecorder.state === "recording") {
+    state.mediaRecorder.stop();
+    el.voiceBtn.style.color = "";
+    el.voiceBtn.classList.remove("recording");
+    toast("Recording stopped. Sending...");
+  }
+}
+
+async function uploadFile(formData) {
+  const res = await fetch(`${state.apiBase}/api/conversations/${state.activeConversationId}/upload/`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${state.access}` },
+    body: formData
+  });
+  if (!res.ok) throw new Error("Upload failed");
+  return await res.json();
 }
 
 function formatMessageTime(value) {
@@ -366,32 +491,15 @@ function onMessagesScroll() {
   state.stickToBottom = (scrollHeight - scrollTop - clientHeight) < 80;
 }
 
-let loadChatsTimeout = null;
-function throttledLoadChats() {
-  if (loadChatsTimeout) return;
-  loadChatsTimeout = setTimeout(() => {
-    loadChats();
-    loadChatsTimeout = null;
-  }, 300);
-}
-
 function updateSeenStatus(mid) {
   const icon = el.messagesBox.querySelector(`[data-message-id='${mid}'] .status-icon`);
   if (icon) { icon.textContent = "✓✓"; icon.style.color = "var(--seen-blue)"; }
-  throttledLoadChats();
+  setTimeout(() => loadChats(), 300);
 }
 
 function renderEmptyChat() {
-  el.messagesBox.innerHTML = `
-    <div class="welcome-screen">
-      <div class="welcome-center">
-        <h1>WhatsApp Web</h1>
-        <p>Send and receive messages without keeping your phone online.</p>
-      </div>
-    </div>
-  `;
-  el.onlineStatus.textContent = "";
-  el.onlineStatus.classList.remove("online");
+  el.messagesBox.innerHTML = `<div class="welcome-screen"><div class="welcome-center"><h1>WhatsApp Web</h1><p>Send and receive messages without keeping your phone online.</p></div></div>`;
+  el.onlineStatus.textContent = ""; el.onlineStatus.classList.remove("online");
 }
 
 function updateMePanel() {

@@ -115,7 +115,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not msg_id or not emoji: return
         
         reaction_data = await self.db_add_reaction(msg_id, emoji)
-        if reaction_data:
+        if reaction_data is not None:
             await self.channel_layer.group_send(self.room, {
                 'type': 'reaction_event',
                 'message_id': msg_id,
@@ -156,6 +156,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'type': 'reaction',
             'message_id': event.get('message_id'),
             'reactions': event.get('reactions')
+        }))
+
+    async def chat_message_media(self, event):
+        await self.send(json.dumps({
+            'type': 'message',
+            **event.get('message')
         }))
 
     async def user_status_event(self, event):

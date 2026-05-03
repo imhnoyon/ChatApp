@@ -18,7 +18,7 @@ class UserListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        users = User.objects.exclude(id=request.user.id)
+        users = User.objects.exclude(id=request.user.id).exclude(is_superuser=True)
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data)
 

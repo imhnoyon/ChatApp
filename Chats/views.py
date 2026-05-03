@@ -5,7 +5,22 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth.models import User
 from .models import Conversation, Message
-from .serializers import ConversationSerializer, MessageSerializer
+from .serializers import ConversationSerializer, MessageSerializer, UserSerializer
+from rest_framework.parsers import MultiPartParser, FormParser
+import mimetypes
+from pathlib import Path
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from django.utils import timezone
+
+
+class UserListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        users = User.objects.exclude(id=request.user.id)
+        serializer = UserSerializer(users, many=True)
+        return Response(serializer.data)
 
 
 class ConversationListView(APIView):
@@ -15,6 +30,36 @@ class ConversationListView(APIView):
         conversations = request.user.conversations.all()
         serializer = ConversationSerializer(conversations, many=True, context={'request': request})
         return Response(serializer.data)
+
+    def post(self, request):
+        """
+        Start a new conversation with a user by user_id in POST body.
+        Example: POST /conversations/ {"user_id": 2}
+        """
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user1 = request.user
+            user2 = User.objects.get(id=user_id)
+
+            # Find if a conversation already exists between the two users
+            conversation = Conversation.objects.filter(
+                participants=user1
+            ).filter(
+                participants=user2
+            ).first()
+
+            if not conversation:
+                conversation = Conversation.objects.create()
+                conversation.participants.add(user1, user2)
+
+            serializer = ConversationSerializer(conversation, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class MessageListView(APIView):
@@ -61,13 +106,6 @@ class ConversationAPIView(APIView):
             return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-from rest_framework.parsers import MultiPartParser, FormParser
-import mimetypes
-from pathlib import Path
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
-from django.utils import timezone
 
 class FileUploadView(APIView):
     permission_classes = [IsAuthenticated]
@@ -125,6 +163,58 @@ class FileUploadView(APIView):
             )
 
             return Response(data, status=status.HTTP_201_CREATED)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class MessageEditView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, conv_id, message_id):
+        return self._edit_message(request, conv_id, message_id)
+
+    def post(self, request, conv_id, message_id):
+        return self._edit_message(request, conv_id, message_id)
+
+    def _edit_message(self, request, conv_id, message_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            message = Message.objects.select_related('sender').filter(id=message_id, conversation=conversation).first()
+            if not message:
+                return Response({'error': 'Message not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            if message.sender_id != request.user.id:
+                return Response({'error': 'You can only edit your own messages.'}, status=status.HTTP_403_FORBIDDEN)
+
+            if message.message_type != 'text':
+                return Response({'error': 'Only text messages can be edited.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            text = (request.data.get('text') or '').strip()
+            if not text:
+                return Response({'error': 'Text is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            message.text = text
+            message.edited_at = timezone.now()
+            message.save(update_fields=['text', 'edited_at'])
+
+            serializer = MessageSerializer(message, context={'request': request})
+            data = serializer.data
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'message_edited',
+                    **data,
+                }
+            )
+
+            return Response(data, status=status.HTTP_200_OK)
         except Conversation.DoesNotExist:
             return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:

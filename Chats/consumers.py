@@ -49,6 +49,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         if action == 'send_message':
             await self.handle_send(data)
+        elif action == 'edit_message':
+            await self.handle_edit_message(data)
         elif action == 'typing':
             await self.handle_typing(data)
         elif action == 'seen':
@@ -73,15 +75,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         text = data.get('text', '').strip()
         if not text: return
         msg = await self.save_message(text)
-        await self.channel_layer.group_send(self.room, {
-            'type': 'chat_message',
-            'id': msg.id,
-            'text': msg.text,
-            'sender_id': self.user.id,
-            'sender_name': self.user.username,
-            'status': 'delivered',
-            'created_at': timezone.localtime(msg.created_at).isoformat(),
-        })
+        await self.broadcast_message(msg, event_type='chat_message')
+
+    async def handle_edit_message(self, data):
+        msg_id = data.get('message_id')
+        text = data.get('text', '').strip()
+        if not msg_id or not text:
+            return
+
+        message = await self.db_edit_message(msg_id, text)
+        if message is None:
+            return
+
+        await self.broadcast_message(message, event_type='message_edited')
 
     async def handle_typing(self, data):
         await self.channel_layer.group_send(self.room, {
@@ -133,7 +139,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'sender_name': event.get('sender_name'),
             'status': event.get('status'),
             'created_at': event.get('created_at'),
+            'edited_at': event.get('edited_at'),
             'reactions': []
+        }))
+
+    async def message_edited(self, event):
+        await self.send(json.dumps({
+            'type': 'message_edited',
+            'id': event.get('id'),
+            'text': event.get('text'),
+            'sender_id': event.get('sender_id'),
+            'sender_name': event.get('sender_name'),
+            'status': event.get('status'),
+            'created_at': event.get('created_at'),
+            'edited_at': event.get('edited_at'),
+            'reactions': event.get('reactions', []),
         }))
 
     async def typing_event(self, event):
@@ -190,6 +210,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
             status='delivered'
         )
 
+    async def broadcast_message(self, msg, event_type='chat_message'):
+        await self.channel_layer.group_send(self.room, {
+            'type': event_type,
+            'id': msg.id,
+            'text': msg.text,
+            'sender_id': msg.sender_id,
+            'sender_name': msg.sender.username,
+            'status': msg.status,
+            'created_at': timezone.localtime(msg.created_at).isoformat(),
+            'edited_at': timezone.localtime(msg.edited_at).isoformat() if msg.edited_at else None,
+            'reactions': [],
+        })
+
     @database_sync_to_async
     def mark_seen(self, msg_id):
         Message.objects.filter(id=msg_id).exclude(sender=self.user).update(status='seen')
@@ -222,4 +255,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 res.append({'emoji': r.emoji, 'user': r.user.id, 'username': r.user.username})
             return res
         except:
+            return None
+
+    @database_sync_to_async
+    def db_edit_message(self, msg_id, text):
+        try:
+            msg = Message.objects.select_related('sender').get(id=msg_id, conversation=self.conversation)
+            if msg.sender_id != self.user.id:
+                return None
+            if msg.message_type != 'text':
+                return None
+            msg.text = text
+            msg.edited_at = timezone.now()
+            msg.save(update_fields=['text', 'edited_at'])
+            msg.refresh_from_db()
+            return msg
+        except Message.DoesNotExist:
             return None

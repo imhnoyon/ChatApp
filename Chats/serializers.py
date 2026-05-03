@@ -17,14 +17,18 @@ class ReactionSerializer(serializers.ModelSerializer):
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     created_at = serializers.SerializerMethodField()
+    edited_at = serializers.SerializerMethodField()
     reactions = ReactionSerializer(many=True, read_only=True)
     
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'text', 'status', 'created_at', 'reactions', 'file', 'message_type']
+        fields = ['id', 'sender', 'text', 'status', 'created_at', 'edited_at', 'reactions', 'file', 'message_type']
         
     def get_created_at(self, obj):
         return timezone.localtime(obj.created_at).isoformat()
+
+    def get_edited_at(self, obj):
+        return timezone.localtime(obj.edited_at).isoformat() if obj.edited_at else None
 
 class ConversationSerializer(serializers.ModelSerializer):
     other_user = serializers.SerializerMethodField()

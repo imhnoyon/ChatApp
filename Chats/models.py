@@ -34,6 +34,7 @@ class Message(models.Model):
     message_type = models.CharField(max_length=10, choices=MESSAGE_TYPES, default='text')
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='sending')
     created_at = models.DateTimeField(auto_now_add=True)
+    edited_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         ordering = ['created_at']

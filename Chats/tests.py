@@ -1,11 +1,13 @@
 from unittest.mock import AsyncMock, patch
 
-from django.contrib.auth.models import User
+from django.conf import settings
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from .models import Conversation, Message
 from .views import MessageEditView, UserListView
+
+User = settings.AUTH_USER_MODEL
 
 
 class UserListViewTests(TestCase):

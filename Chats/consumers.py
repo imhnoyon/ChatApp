@@ -2,8 +2,10 @@ import json
 from django.utils import timezone
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.contrib.auth.models import User
+from django.conf import settings
 from .models import Conversation, Message, Reaction
+
+User = settings.AUTH_USER_MODEL
 
 class ChatConsumer(AsyncWebsocketConsumer):
 

@@ -1,9 +1,10 @@
-from django.contrib import admin
-from django.contrib.auth.models import User
+﻿from django.contrib import admin
+from .models import User
 
-admin.site.unregister(User)
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
-    list_display = ('id', 'username', 'email', 'is_staff', 'is_active')
-    search_fields = ('username', 'email')
-    list_filter = ('is_staff', 'is_active')
+    list_display = ('id', 'username', 'email', 'first_name', 'last_name','avatar', )
+    search_fields = ('username', 'email', 'first_name', 'last_name',)
+
+
+

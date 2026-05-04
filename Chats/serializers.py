@@ -1,12 +1,19 @@
 from django.utils import timezone
 from rest_framework import serializers
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from .models import Conversation, Message, Reaction
 
+User = get_user_model()
+
 class UserSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'first_name', 'last_name']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'full_name','avatar']
+
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip() or obj.username
 
 class ReactionSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)

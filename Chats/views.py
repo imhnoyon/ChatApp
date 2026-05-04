@@ -1,9 +1,9 @@
 from django.db.models import Q
+from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from django.contrib.auth.models import User
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer, UserSerializer
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -12,13 +12,16 @@ from pathlib import Path
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.utils import timezone
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 
 class UserListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        users = User.objects.exclude(id=request.user.id).exclude(is_superuser=True)
+        users = User.objects.exclude(id=request.user.id).exclude(is_staff=True)
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data)
 

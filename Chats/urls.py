@@ -9,4 +9,5 @@ urlpatterns = [
     path('conversations/start/<int:user_id>/', views.ConversationAPIView.as_view()),
     path('conversations/<int:conv_id>/upload/', views.FileUploadView.as_view()),
     path('conversations/<int:conv_id>/messages/<int:message_id>/edit/', views.MessageEditView.as_view()),
+    path('conversations/<int:conv_id>/messages/<int:message_id>/delete/', views.MessageDeleteView.as_view()),
 ]

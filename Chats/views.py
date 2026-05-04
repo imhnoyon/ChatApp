@@ -222,3 +222,45 @@ class MessageEditView(APIView):
             return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class MessageDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, conv_id, message_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            message = Message.objects.select_related('sender').filter(id=message_id, conversation=conversation).first()
+            if not message:
+                return Response({'error': 'Message not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            if message.sender_id != request.user.id:
+                return Response({'error': 'You can only delete your own messages.'}, status=status.HTTP_403_FORBIDDEN)
+
+            # Delete the message file if it exists
+            if message.file:
+                try:
+                    message.file.delete()
+                except Exception:
+                    pass
+
+            message.delete()
+
+            # Send WebSocket notification about message deletion
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'message_deleted',
+                    'message_id': message_id,
+                }
+            )
+
+            return Response({'success': 'Message deleted successfully.'}, status=status.HTTP_200_OK)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

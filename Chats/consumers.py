@@ -3,7 +3,7 @@ from django.utils import timezone
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.conf import settings
-from .models import Conversation, Message, Reaction
+from .models import Conversation, Message, Reaction, Call, CallParticipant
 
 User = settings.AUTH_USER_MODEL
 
@@ -72,6 +72,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'user_id': self.user.id,
                 'status': 'online',
             })
+        # Call handlers
+        elif action == 'call_ringing':
+            await self.handle_call_ringing(data)
+        elif action == 'webrtc_offer':
+            await self.handle_webrtc_offer(data)
+        elif action == 'webrtc_answer':
+            await self.handle_webrtc_answer(data)
+        elif action == 'webrtc_ice_candidate':
+            await self.handle_webrtc_ice_candidate(data)
 
     async def handle_send(self, data):
         text = data.get('text', '').strip()
@@ -130,6 +139,73 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'reactions': reaction_data
             })
 
+    # ── Call Handlers ──────────────────────────────
+
+    async def handle_call_ringing(self, data):
+        """Notify receiver that a call is ringing"""
+        call_id = data.get('call_id')
+        if not call_id:
+            return
+        
+        call = await self.get_call(call_id)
+        if not call:
+            return
+
+        # Update call status to ringing
+        await self.update_call_status(call_id, 'ringing')
+        
+        # Broadcast to room
+        await self.channel_layer.group_send(self.room, {
+            'type': 'call_ringing_event',
+            'call_id': call_id,
+            'initiator_id': call.initiator_id,
+        })
+
+    async def handle_webrtc_offer(self, data):
+        """Forward WebRTC offer from initiator to receiver"""
+        call_id = data.get('call_id')
+        offer = data.get('offer')
+        
+        if not call_id or not offer:
+            return
+
+        await self.channel_layer.group_send(self.room, {
+            'type': 'webrtc_offer_event',
+            'call_id': call_id,
+            'offer': offer,
+            'from_user_id': self.user.id,
+        })
+
+    async def handle_webrtc_answer(self, data):
+        """Forward WebRTC answer from receiver to initiator"""
+        call_id = data.get('call_id')
+        answer = data.get('answer')
+        
+        if not call_id or not answer:
+            return
+
+        await self.channel_layer.group_send(self.room, {
+            'type': 'webrtc_answer_event',
+            'call_id': call_id,
+            'answer': answer,
+            'from_user_id': self.user.id,
+        })
+
+    async def handle_webrtc_ice_candidate(self, data):
+        """Forward ICE candidates for WebRTC"""
+        call_id = data.get('call_id')
+        candidate = data.get('candidate')
+        
+        if not call_id or not candidate:
+            return
+
+        await self.channel_layer.group_send(self.room, {
+            'type': 'webrtc_ice_candidate_event',
+            'call_id': call_id,
+            'candidate': candidate,
+            'from_user_id': self.user.id,
+        })
+
     # ── Broadcast Receivers ────────────────────────
 
     async def chat_message(self, event):
@@ -180,6 +256,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'reactions': event.get('reactions')
         }))
 
+    async def message_deleted(self, event):
+        await self.send(json.dumps({
+            'type': 'message_deleted',
+            'message_id': event.get('message_id'),
+        }))
+
     async def chat_message_media(self, event):
         await self.send(json.dumps({
             'type': 'message',
@@ -196,6 +278,75 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def presence_query_event(self, event):
         if event['sender_id'] != self.user.id:
             await self.send(json.dumps({'type': 'presence_query'}))
+
+    # ── Call Broadcast Receivers ───────────────────
+
+    async def call_initiated(self, event):
+        await self.send(json.dumps({
+            'type': 'call_initiated',
+            'call_data': event.get('call_data')
+        }))
+
+    async def call_answered(self, event):
+        await self.send(json.dumps({
+            'type': 'call_answered',
+            'call_data': event.get('call_data')
+        }))
+
+    async def call_rejected(self, event):
+        await self.send(json.dumps({
+            'type': 'call_rejected',
+            'call_data': event.get('call_data')
+        }))
+
+    async def call_ended(self, event):
+        await self.send(json.dumps({
+            'type': 'call_ended',
+            'call_data': event.get('call_data')
+        }))
+
+    async def call_missed(self, event):
+        await self.send(json.dumps({
+            'type': 'call_missed',
+            'call_data': event.get('call_data')
+        }))
+
+    async def call_ringing_event(self, event):
+        await self.send(json.dumps({
+            'type': 'call_ringing',
+            'call_id': event.get('call_id'),
+            'initiator_id': event.get('initiator_id'),
+        }))
+
+    async def webrtc_offer_event(self, event):
+        # Don't send the offer back to the sender
+        if event['from_user_id'] != self.user.id:
+            await self.send(json.dumps({
+                'type': 'webrtc_offer',
+                'call_id': event.get('call_id'),
+                'offer': event.get('offer'),
+                'from_user_id': event.get('from_user_id'),
+            }))
+
+    async def webrtc_answer_event(self, event):
+        # Don't send the answer back to the sender
+        if event['from_user_id'] != self.user.id:
+            await self.send(json.dumps({
+                'type': 'webrtc_answer',
+                'call_id': event.get('call_id'),
+                'answer': event.get('answer'),
+                'from_user_id': event.get('from_user_id'),
+            }))
+
+    async def webrtc_ice_candidate_event(self, event):
+        # Don't send ICE candidate back to the sender
+        if event['from_user_id'] != self.user.id:
+            await self.send(json.dumps({
+                'type': 'webrtc_ice_candidate',
+                'call_id': event.get('call_id'),
+                'candidate': event.get('candidate'),
+                'from_user_id': event.get('from_user_id'),
+            }))
 
     # ── DB Helpers ─────────────────────────────────
 
@@ -273,4 +424,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             msg.refresh_from_db()
             return msg
         except Message.DoesNotExist:
+            return None
+
+    # ── Call DB Helpers ────────────────────────────
+
+    @database_sync_to_async
+    def get_call(self, call_id):
+        try:
+            return Call.objects.get(id=call_id, conversation=self.conversation)
+        except Call.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def update_call_status(self, call_id, status):
+        try:
+            call = Call.objects.get(id=call_id, conversation=self.conversation)
+            call.status = status
+            call.save(update_fields=['status'])
+            return call
+        except Call.DoesNotExist:
             return None

@@ -1,7 +1,7 @@
 from django.utils import timezone
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Conversation, Message, Reaction
+from .models import Conversation, Message, Reaction, Call, CallParticipant
 
 User = get_user_model()
 
@@ -57,3 +57,74 @@ class ConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Conversation
         fields = ['id', 'other_user', 'last_message', 'unread_count', 'created_at']
+
+
+class CallParticipantSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    joined_at = serializers.SerializerMethodField()
+    left_at = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CallParticipant
+        fields = ['id', 'user', 'status', 'joined_at', 'left_at', 'is_audio_enabled', 'is_video_enabled']
+
+    def get_joined_at(self, obj):
+        return timezone.localtime(obj.joined_at).isoformat() if obj.joined_at else None
+
+    def get_left_at(self, obj):
+        return timezone.localtime(obj.left_at).isoformat() if obj.left_at else None
+
+
+class CallSerializer(serializers.ModelSerializer):
+    initiator = UserSerializer(read_only=True)
+    receiver = UserSerializer(read_only=True)
+    participants = CallParticipantSerializer(many=True, read_only=True)
+    started_at = serializers.SerializerMethodField()
+    answered_at = serializers.SerializerMethodField()
+    ended_at = serializers.SerializerMethodField()
+    duration_seconds = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Call
+        fields = [
+            'id', 'conversation', 'initiator', 'receiver', 'call_type', 
+            'status', 'started_at', 'answered_at', 'ended_at', 'duration_seconds',
+            'is_group_call', 'participants'
+        ]
+
+    def get_started_at(self, obj):
+        return timezone.localtime(obj.started_at).isoformat()
+
+    def get_answered_at(self, obj):
+        return timezone.localtime(obj.answered_at).isoformat() if obj.answered_at else None
+
+    def get_ended_at(self, obj):
+        return timezone.localtime(obj.ended_at).isoformat() if obj.ended_at else None
+
+    def get_duration_seconds(self, obj):
+        return obj.get_duration_in_seconds()
+
+
+class CallHistorySerializer(serializers.ModelSerializer):
+    """Simplified serializer for call history list"""
+    initiator = UserSerializer(read_only=True)
+    receiver = UserSerializer(read_only=True)
+    started_at = serializers.SerializerMethodField()
+    ended_at = serializers.SerializerMethodField()
+    duration_seconds = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Call
+        fields = [
+            'id', 'initiator', 'receiver', 'call_type', 
+            'status', 'started_at', 'ended_at', 'duration_seconds'
+        ]
+
+    def get_started_at(self, obj):
+        return timezone.localtime(obj.started_at).isoformat()
+
+    def get_ended_at(self, obj):
+        return timezone.localtime(obj.ended_at).isoformat() if obj.ended_at else None
+
+    def get_duration_seconds(self, obj):
+        return obj.get_duration_in_seconds()

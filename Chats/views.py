@@ -4,8 +4,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from .models import Conversation, Message
-from .serializers import ConversationSerializer, MessageSerializer, UserSerializer
+from .models import Conversation, Message, Call, CallParticipant
+from .serializers import ConversationSerializer, MessageSerializer, UserSerializer, CallSerializer, CallHistorySerializer
 from rest_framework.parsers import MultiPartParser, FormParser
 import mimetypes
 from pathlib import Path
@@ -13,6 +13,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.utils import timezone
 from django.contrib.auth import get_user_model
+from datetime import timedelta
 
 User = get_user_model()
 
@@ -262,5 +263,250 @@ class MessageDeleteView(APIView):
             return Response({'success': 'Message deleted successfully.'}, status=status.HTTP_200_OK)
         except Conversation.DoesNotExist:
             return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CallInitiateView(APIView):
+    """Initiate a new voice or video call"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conv_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            call_type = request.data.get('call_type', 'voice')
+            if call_type not in ['voice', 'video']:
+                return Response({'error': 'Invalid call type'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Get the other participant
+            receiver = conversation.get_other_user(request.user)
+            if not receiver:
+                return Response({'error': 'No other participant in conversation'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Create a new call
+            call = Call.objects.create(
+                conversation=conversation,
+                initiator=request.user,
+                receiver=receiver,
+                call_type=call_type,
+                status='initiated'
+            )
+
+            # Broadcast call initiation via WebSocket
+            channel_layer = get_channel_layer()
+            serializer = CallSerializer(call, context={'request': request})
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'call_initiated',
+                    'call_data': serializer.data
+                }
+            )
+
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CallAnswerView(APIView):
+    """Answer an incoming call"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conv_id, call_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            call = Call.objects.get(id=call_id, conversation=conversation)
+            if call.receiver_id != request.user.id:
+                return Response({'error': 'Only the receiver can answer this call'}, status=status.HTTP_403_FORBIDDEN)
+
+            if call.status not in ['initiated', 'ringing']:
+                return Response({'error': f'Cannot answer call with status {call.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            call.status = 'answered'
+            call.answered_at = timezone.now()
+            call.save()
+
+            # Broadcast call answer via WebSocket
+            channel_layer = get_channel_layer()
+            serializer = CallSerializer(call, context={'request': request})
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'call_answered',
+                    'call_data': serializer.data
+                }
+            )
+
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Call.DoesNotExist:
+            return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CallRejectView(APIView):
+    """Reject an incoming call"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conv_id, call_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            call = Call.objects.get(id=call_id, conversation=conversation)
+            if call.receiver_id != request.user.id:
+                return Response({'error': 'Only the receiver can reject this call'}, status=status.HTTP_403_FORBIDDEN)
+
+            if call.status not in ['initiated', 'ringing']:
+                return Response({'error': f'Cannot reject call with status {call.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            call.status = 'rejected'
+            call.ended_at = timezone.now()
+            call.save()
+
+            # Broadcast call rejection via WebSocket
+            channel_layer = get_channel_layer()
+            serializer = CallSerializer(call, context={'request': request})
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'call_rejected',
+                    'call_data': serializer.data
+                }
+            )
+
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Call.DoesNotExist:
+            return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CallEndView(APIView):
+    """End an ongoing call"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conv_id, call_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            call = Call.objects.get(id=call_id, conversation=conversation)
+            if call.status != 'answered':
+                return Response({'error': f'Cannot end call with status {call.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            call.status = 'ended'
+            call.ended_at = timezone.now()
+            
+            # Calculate duration if answered
+            if call.answered_at:
+                call.duration = call.ended_at - call.answered_at
+            
+            call.save()
+
+            # Broadcast call end via WebSocket
+            channel_layer = get_channel_layer()
+            serializer = CallSerializer(call, context={'request': request})
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'call_ended',
+                    'call_data': serializer.data
+                }
+            )
+
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Call.DoesNotExist:
+            return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CallMissView(APIView):
+    """Mark a call as missed (no answer timeout)"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conv_id, call_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            call = Call.objects.get(id=call_id, conversation=conversation)
+            if call.status not in ['initiated', 'ringing']:
+                return Response({'error': f'Cannot mark call as missed with status {call.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            call.status = 'missed'
+            call.ended_at = timezone.now()
+            call.save()
+
+            # Broadcast call missed via WebSocket
+            channel_layer = get_channel_layer()
+            serializer = CallSerializer(call, context={'request': request})
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conv_id}',
+                {
+                    'type': 'call_missed',
+                    'call_data': serializer.data
+                }
+            )
+
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Call.DoesNotExist:
+            return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CallHistoryView(APIView):
+    """Get call history for a conversation or user"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, conv_id):
+        try:
+            conversation = Conversation.objects.get(id=conv_id)
+            if request.user not in conversation.participants.all():
+                return Response({'error': 'Not a participant'}, status=status.HTTP_403_FORBIDDEN)
+
+            calls = Call.objects.filter(conversation=conversation).order_by('-started_at')
+            serializer = CallHistorySerializer(calls, many=True)
+            return Response(serializer.data)
+        except Conversation.DoesNotExist:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserCallHistoryView(APIView):
+    """Get user's recent calls across all conversations"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            # Get calls where user is initiator or receiver
+            calls = Call.objects.filter(
+                Q(initiator=request.user) | Q(receiver=request.user)
+            ).order_by('-started_at')[:50]  # Limit to 50 recent calls
+            
+            serializer = CallHistorySerializer(calls, many=True)
+            return Response(serializer.data)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Message Deletion Test - WebSocket</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #333; margin-bottom: 20px; }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .config-section {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+        input, button {
+            font-size: 14px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        input { width: 100%; }
+        button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+        button:hover { background: #1976D2; }
+        button.danger {
+            background: #f44336;
+        }
+        button.danger:hover {
+            background: #da190b;
+        }
+        #messages {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            background: #fafafa;
+        }
+        .message {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            border-left: 4px solid #4CAF50;
+            position: relative;
+            animation: slideIn 0.3s ease;
+        }
+        .message.deleted {
+            opacity: 0.5;
+            text-decoration: line-through;
+            border-left-color: #f44336;
+        }
+        .message-id { font-size: 12px; color: #999; }
+        .message-text { color: #333; margin: 5px 0; }
+        .message-actions {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+        }
+        .delete-btn {
+            background: #f44336;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .delete-btn:hover { background: #da190b; }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        .status.connected {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+        .status.disconnected {
+            background: #ffcdd2;
+            color: #c62828;
+        }
+        .event-log {
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+        }
+        .log-entry {
+            padding: 3px;
+            margin: 2px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .log-entry.sent { color: #1976D2; }
+        .log-entry.received { color: #388E3C; }
+        .log-entry.deleted { color: #D32F2F; }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Message Deletion Real-Time Test</h1>
+        
+        <div class="info-box">
+            <strong>📋 Instructions:</strong>
+            <ul style="margin-left: 20px; margin-top: 10px;">
+                <li>Enter your JWT token and conversation ID</li>
+                <li>Click "Connect" to join the conversation via WebSocket</li>
+                <li>Open this page in another browser tab and do the same</li>
+                <li>Send messages and delete them - they should disappear in real-time!</li>
+            </ul>
+        </div>
+
+        <div class="config-section">
+            <div class="form-group">
+                <label>WebSocket URL:</label>
+                <input type="text" id="wsUrl" value="ws://localhost:8000/ws/chat/1/">
+            </div>
+            <div class="form-group">
+                <label>JWT Token:</label>
+                <input type="text" id="token" placeholder="Paste your JWT token here">
+            </div>
+            <button onclick="connect()">✅ Connect</button>
+            <button onclick="disconnect()" class="danger">❌ Disconnect</button>
+            <button onclick="clearMessages()">🗑️ Clear Messages</button>
+        </div>
+
+        <div id="status" class="status disconnected">
+            ⚫ Disconnected
+        </div>
+
+        <h3 style="margin-top: 20px;">Messages:</h3>
+        <div id="messages"></div>
+
+        <div class="form-group">
+            <label>Send Test Message:</label>
+            <input type="text" id="messageText" placeholder="Type a test message...">
+            <button onclick="sendTestMessage()">📤 Send</button>
+        </div>
+
+        <h3 style="margin-top: 20px;">WebSocket Events Log:</h3>
+        <div class="event-log" id="eventLog"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let messageStore = {}; // Store message IDs for deletion
+        let token = '';
+
+        function connect() {
+            token = document.getElementById('token').value;
+            if (!token) {
+                alert('Please paste your JWT token');
+                return;
+            }
+
+            const wsUrl = document.getElementById('wsUrl').value;
+            
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                updateStatus(true);
+                logEvent('Connected to WebSocket', 'received');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                logEvent(`Event received: ${data.type}`, 'received');
+                handleWebSocketMessage(data);
+            };
+
+            ws.onclose = () => {
+                updateStatus(false);
+                logEvent('Disconnected from WebSocket', 'received');
+            };
+
+            ws.onerror = (error) => {
+                logEvent(`WebSocket Error: ${error}`, 'received');
+                updateStatus(false);
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                updateStatus(false);
+            }
+        }
+
+        function updateStatus(connected) {
+            const status = document.getElementById('status');
+            if (connected) {
+                status.className = 'status connected';
+                status.textContent = '🟢 Connected';
+            } else {
+                status.className = 'status disconnected';
+                status.textContent = '⚫ Disconnected';
+            }
+        }
+
+        function handleWebSocketMessage(data) {
+            const type = data.type;
+
+            if (type === 'message') {
+                addMessage(data);
+            } else if (type === 'message_deleted') {
+                deleteMessageUI(data.message_id);
+            } else if (type === 'typing') {
+                logEvent(`User ${data.sender_id} is ${data.is_typing ? 'typing' : 'stopped typing'}`, 'received');
+            } else if (type === 'seen') {
+                logEvent(`Message ${data.message_id} marked as seen`, 'received');
+            }
+        }
+
+        function addMessage(data) {
+            const msgContainer = document.getElementById('messages');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'message';
+            msgDiv.id = `msg-${data.id}`;
+            msgDiv.dataset.messageId = data.id;
+
+            // Store for later deletion
+            messageStore[data.id] = data;
+
+            const isOwnMessage = data.sender_id !== parseInt(localStorage.getItem('user_id') || '0');
+            
+            msgDiv.innerHTML = `
+                <div class="message-id">ID: ${data.id} | Sender: ${data.sender_name} | ${new Date(data.created_at).toLocaleTimeString()}</div>
+                <div class="message-text">${data.text || '(Media message)'}</div>
+                ${isOwnMessage ? `<div class="message-actions">
+                    <button class="delete-btn" onclick="deleteMessage(${data.id})">Delete</button>
+                </div>` : ''}
+            `;
+            msgContainer.appendChild(msgDiv);
+            msgContainer.scrollTop = msgContainer.scrollHeight;
+            logEvent(`Message received: "${data.text}"`, 'received');
+        }
+
+        function deleteMessageUI(messageId) {
+            const msgElement = document.getElementById(`msg-${messageId}`);
+            if (msgElement) {
+                msgElement.classList.add('deleted');
+                msgElement.querySelector('.message-actions')?.remove();
+                logEvent(`Message ${messageId} deleted in real-time!`, 'deleted');
+            }
+        }
+
+        async function deleteMessage(messageId) {
+            const convId = document.getElementById('wsUrl').value.match(/\/chat\/(\d+)\//)?.[1];
+            if (!convId) {
+                alert('Could not extract conversation ID');
+                return;
+            }
+
+            try {
+                const response = await fetch(
+                    `http://localhost:8000/api/conversations/${convId}/messages/${messageId}/delete/`,
+                    {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+
+                if (response.ok) {
+                    logEvent(`Delete request sent for message ${messageId}`, 'sent');
+                    // UI will update via WebSocket event
+                } else {
+                    alert(`Delete failed: ${response.status}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        async function sendTestMessage() {
+            const text = document.getElementById('messageText').value.trim();
+            if (!text) {
+                alert('Please type a message');
+                return;
+            }
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('WebSocket not connected');
+                return;
+            }
+
+            ws.send(JSON.stringify({
+                action: 'send_message',
+                text: text
+            }));
+
+            document.getElementById('messageText').value = '';
+            logEvent(`Message sent: "${text}"`, 'sent');
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+            messageStore = {};
+        }
+
+        function logEvent(message, type) {
+            const log = document.getElementById('eventLog');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+
+            // Keep only last 50 entries
+            while (log.children.length > 50) {
+                log.removeChild(log.firstChild);
+            }
+        }
+
+        // Auto-reconnect on page load
+        window.addEventListener('load', () => {
+            const savedToken = localStorage.getItem('jwt_token');
+            if (savedToken) {
+                document.getElementById('token').value = savedToken;
+            }
+        });
+    </script>
+</body>
+</html>

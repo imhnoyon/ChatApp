@@ -55,3 +55,72 @@ class Reaction(models.Model):
 
     def __str__(self):
         return f"{self.user.username} reacted {self.emoji} to {self.message.id}"
+
+
+class Call(models.Model):
+    CALL_TYPE_CHOICES = [
+        ('voice', 'Voice Call'),
+        ('video', 'Video Call'),
+    ]
+    
+    CALL_STATUS_CHOICES = [
+        ('initiated', 'Initiated'),
+        ('ringing', 'Ringing'),
+        ('answered', 'Answered'),
+        ('ended', 'Ended'),
+        ('rejected', 'Rejected'),
+        ('missed', 'Missed'),
+        ('no_answer', 'No Answer'),
+    ]
+
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name='calls'
+    )
+    initiator = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='initiated_calls'
+    )
+    receiver = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='received_calls'
+    )
+    call_type = models.CharField(max_length=10, choices=CALL_TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=CALL_STATUS_CHOICES, default='initiated')
+    started_at = models.DateTimeField(auto_now_add=True)
+    answered_at = models.DateTimeField(blank=True, null=True)
+    ended_at = models.DateTimeField(blank=True, null=True)
+    duration = models.DurationField(blank=True, null=True)  # calculated as ended_at - answered_at
+    is_group_call = models.BooleanField(default=False)
+    
+    class Meta:
+        ordering = ['-started_at']
+
+    def get_duration_in_seconds(self):
+        if self.duration:
+            return int(self.duration.total_seconds())
+        return 0
+
+    def __str__(self):
+        return f"{self.get_call_type_display()} call between {self.initiator.username} and {self.receiver.username}"
+
+
+class CallParticipant(models.Model):
+    """For tracking participants in group calls and individual call endpoints"""
+    PARTICIPANT_STATUS_CHOICES = [
+        ('invited', 'Invited'),
+        ('answered', 'Answered'),
+        ('declined', 'Declined'),
+        ('left', 'Left'),
+    ]
+    
+    call = models.ForeignKey(Call, on_delete=models.CASCADE, related_name='participants')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='call_participations')
+    status = models.CharField(max_length=20, choices=PARTICIPANT_STATUS_CHOICES, default='invited')
+    joined_at = models.DateTimeField(blank=True, null=True)
+    left_at = models.DateTimeField(blank=True, null=True)
+    is_audio_enabled = models.BooleanField(default=True)
+    is_video_enabled = models.BooleanField(default=True)
+    
+    class Meta:
+        unique_together = ('call', 'user')
+
+    def __str__(self):
+        return f"{self.user.username} in call {self.call.id}"

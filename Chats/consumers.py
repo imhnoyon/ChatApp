@@ -26,6 +26,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room, self.channel_name)
         await self.accept()
 
+        # Send any pending/missed calls that user missed while offline
+        pending_calls = await self.get_pending_calls()
+        for call_data in pending_calls:
+            await self.send(json.dumps({
+                'type': 'incoming_call',
+                'call': call_data
+            }))
+
         await self.channel_layer.group_send(self.room, {
             'type': 'user_status_event',
             'user_id': self.user.id,
@@ -283,32 +291,32 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def call_initiated(self, event):
         await self.send(json.dumps({
-            'type': 'call_initiated',
-            'call_data': event.get('call_data')
+            'type': 'incoming_call',
+            'call': event.get('call')
         }))
 
     async def call_answered(self, event):
         await self.send(json.dumps({
             'type': 'call_answered',
-            'call_data': event.get('call_data')
+            'call': event.get('call')
         }))
 
     async def call_rejected(self, event):
         await self.send(json.dumps({
             'type': 'call_rejected',
-            'call_data': event.get('call_data')
+            'call': event.get('call')
         }))
 
     async def call_ended(self, event):
         await self.send(json.dumps({
             'type': 'call_ended',
-            'call_data': event.get('call_data')
+            'call': event.get('call')
         }))
 
     async def call_missed(self, event):
         await self.send(json.dumps({
             'type': 'call_missed',
-            'call_data': event.get('call_data')
+            'call': event.get('call')
         }))
 
     async def call_ringing_event(self, event):
@@ -444,3 +452,78 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return call
         except Call.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def get_pending_calls(self):
+        """Fetch pending calls for this user that they missed while offline"""
+        from .views import format_call_for_websocket
+        
+        # Get calls where this user is the receiver and status is 'initiated' or 'ringing'
+        pending = Call.objects.filter(
+            conversation=self.conversation,
+            receiver=self.user,
+            status__in=['initiated', 'ringing']
+        )
+        
+        return [format_call_for_websocket(call) for call in pending]
+
+
+# ── Notification Consumer for incoming calls ───────────────────────────────
+# Handles incoming calls even if user is NOT yet in the conversation
+
+class NotificationConsumer(AsyncWebsocketConsumer):
+    """Dedicated consumer for call notifications - reaches user regardless of conversation"""
+    
+    async def connect(self):
+        self.user = self.scope['user']
+        
+        if not self.user.is_authenticated:
+            await self.close()
+            return
+        
+        # Add user to their personal notification group
+        self.notification_room = f'notifications_{self.user.id}'
+        await self.channel_layer.group_add(self.notification_room, self.channel_name)
+        await self.accept()
+    
+    async def disconnect(self, code):
+        if hasattr(self, 'notification_room'):
+            await self.channel_layer.group_discard(self.notification_room, self.channel_name)
+    
+    async def receive(self, text_data):
+        # NotificationConsumer is read-only for now
+        # Only receives call notifications, doesn't handle incoming actions
+        pass
+    
+    # ── Call Notification Handlers ─────────────────
+    
+    async def call_initiated(self, event):
+        """Receive incoming call notification"""
+        await self.send(json.dumps({
+            'type': 'incoming_call',
+            'call': event.get('call')
+        }))
+    
+    async def call_answered(self, event):
+        await self.send(json.dumps({
+            'type': 'call_answered',
+            'call': event.get('call')
+        }))
+    
+    async def call_rejected(self, event):
+        await self.send(json.dumps({
+            'type': 'call_rejected',
+            'call': event.get('call')
+        }))
+    
+    async def call_ended(self, event):
+        await self.send(json.dumps({
+            'type': 'call_ended',
+            'call': event.get('call')
+        }))
+    
+    async def call_missed(self, event):
+        await self.send(json.dumps({
+            'type': 'call_missed',
+            'call': event.get('call')
+        }))

@@ -18,6 +18,26 @@ from datetime import timedelta
 User = get_user_model()
 
 
+def format_call_for_websocket(call):
+    """Format call object for WebSocket in Flutter-compatible format"""
+    return {
+        "id": call.id,
+        "conversation": call.conversation_id,
+        "caller": {
+            "id": call.initiator.id,
+            "username": call.initiator.username
+        },
+        "receiver": {
+            "id": call.receiver.id,
+            "username": call.receiver.username
+        },
+        "call_type": call.call_type,
+        "status": call.status,
+        "start_time": call.answered_at.isoformat() if call.answered_at else None,
+        "end_time": call.ended_at.isoformat() if call.ended_at else None
+    }
+
+
 class UserListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -297,16 +317,27 @@ class CallInitiateView(APIView):
 
             # Broadcast call initiation via WebSocket
             channel_layer = get_channel_layer()
-            serializer = CallSerializer(call, context={'request': request})
+            call_data = format_call_for_websocket(call)
+            
+            # Send to conversation group (for users in that conversation)
             async_to_sync(channel_layer.group_send)(
                 f'chat_{conv_id}',
                 {
                     'type': 'call_initiated',
-                    'call_data': serializer.data
+                    'call': call_data
+                }
+            )
+            
+            # ALSO send to receiver's personal notification channel (so they get call even if not in conversation)
+            async_to_sync(channel_layer.group_send)(
+                f'notifications_{receiver.id}',
+                {
+                    'type': 'call_initiated',
+                    'call': call_data
                 }
             )
 
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return Response(CallSerializer(call, context={'request': request}).data, status=status.HTTP_201_CREATED)
         except Conversation.DoesNotExist:
             return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
@@ -336,16 +367,16 @@ class CallAnswerView(APIView):
 
             # Broadcast call answer via WebSocket
             channel_layer = get_channel_layer()
-            serializer = CallSerializer(call, context={'request': request})
+            call_data = format_call_for_websocket(call)
             async_to_sync(channel_layer.group_send)(
                 f'chat_{conv_id}',
                 {
                     'type': 'call_answered',
-                    'call_data': serializer.data
+                    'call': call_data
                 }
             )
 
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(CallSerializer(call, context={'request': request}).data, status=status.HTTP_200_OK)
         except Call.DoesNotExist:
             return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
         except Conversation.DoesNotExist:
@@ -377,16 +408,16 @@ class CallRejectView(APIView):
 
             # Broadcast call rejection via WebSocket
             channel_layer = get_channel_layer()
-            serializer = CallSerializer(call, context={'request': request})
+            call_data = format_call_for_websocket(call)
             async_to_sync(channel_layer.group_send)(
                 f'chat_{conv_id}',
                 {
                     'type': 'call_rejected',
-                    'call_data': serializer.data
+                    'call': call_data
                 }
             )
 
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(CallSerializer(call, context={'request': request}).data, status=status.HTTP_200_OK)
         except Call.DoesNotExist:
             return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
         except Conversation.DoesNotExist:
@@ -420,16 +451,16 @@ class CallEndView(APIView):
 
             # Broadcast call end via WebSocket
             channel_layer = get_channel_layer()
-            serializer = CallSerializer(call, context={'request': request})
+            call_data = format_call_for_websocket(call)
             async_to_sync(channel_layer.group_send)(
                 f'chat_{conv_id}',
                 {
                     'type': 'call_ended',
-                    'call_data': serializer.data
+                    'call': call_data
                 }
             )
 
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(CallSerializer(call, context={'request': request}).data, status=status.HTTP_200_OK)
         except Call.DoesNotExist:
             return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
         except Conversation.DoesNotExist:
@@ -458,16 +489,16 @@ class CallMissView(APIView):
 
             # Broadcast call missed via WebSocket
             channel_layer = get_channel_layer()
-            serializer = CallSerializer(call, context={'request': request})
+            call_data = format_call_for_websocket(call)
             async_to_sync(channel_layer.group_send)(
                 f'chat_{conv_id}',
                 {
                     'type': 'call_missed',
-                    'call_data': serializer.data
+                    'call': call_data
                 }
             )
 
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(CallSerializer(call, context={'request': request}).data, status=status.HTTP_200_OK)
         except Call.DoesNotExist:
             return Response({'error': 'Call not found'}, status=status.HTTP_404_NOT_FOUND)
         except Conversation.DoesNotExist:

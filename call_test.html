@@ -327,6 +327,8 @@
         let token = '';
         let userId = null;
         let callTimers = {};
+        let activeCallsMap = {}; // Track active calls by ID
+        let wsNotification = null; // Separate WebSocket for notifications
 
         function connect() {
             token = document.getElementById('token').value;
@@ -337,20 +339,21 @@
             }
 
             const wsUrl = document.getElementById('wsUrl').value;
+            const notificationUrl = wsUrl.replace(/\/ws\/chat\/\d+\/$/, '/ws/notifications/');
             
+            // Connect to conversation WebSocket
+            connectConversation(wsUrl);
+            
+            // ALSO connect to notification channel (gets calls even if not in conversation)
+            connectNotifications(notificationUrl);
+        }
+
+        function connectConversation(wsUrl) {
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
                 updateStatus(true);
-                logEvent('✅ Connected to WebSocket', 'received');
-                // Extract user_id from token
-                try {
-                    const payload = JSON.parse(atob(token.split('.')[1]));
-                    userId = payload.user_id;
-                    logEvent(`👤 User ID: ${userId}`, 'info');
-                } catch (e) {
-                    logEvent('⚠️ Could not parse token', 'error');
-                }
+                logEvent('✅ Connected to Chat WebSocket', 'received');
             };
 
             ws.onmessage = (event) => {
@@ -364,12 +367,45 @@
 
             ws.onclose = () => {
                 updateStatus(false);
-                logEvent('❌ Disconnected from WebSocket', 'received');
+                logEvent('❌ Disconnected from Chat WebSocket', 'received');
             };
 
             ws.onerror = (error) => {
-                logEvent(`❌ WebSocket Error`, 'error');
+                logEvent(`❌ Chat WebSocket Error`, 'error');
                 updateStatus(false);
+            };
+        }
+
+        function connectNotifications(notificationUrl) {
+            wsNotification = new WebSocket(notificationUrl);
+
+            wsNotification.onopen = () => {
+                logEvent('✅ Connected to Notifications Channel', 'received');
+                try {
+                    const payload = JSON.parse(atob(document.getElementById('token').value.split('.')[1]));
+                    userId = payload.user_id;
+                    logEvent(`👤 User ID: ${userId} (Notifications Active)`, 'info');
+                } catch (e) {
+                    logEvent('⚠️ Could not parse token', 'error');
+                }
+            };
+
+            wsNotification.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    logEvent(`📢 [NOTIFICATION] ${data.type}`, 'info');
+                    handleWebSocketMessage(data);
+                } catch (e) {
+                    logEvent(`❌ Error parsing notification: ${e.message}`, 'error');
+                }
+            };
+
+            wsNotification.onclose = () => {
+                logEvent('❌ Disconnected from Notifications Channel', 'received');
+            };
+
+            wsNotification.onerror = (error) => {
+                logEvent(`❌ Notifications Error`, 'error');
             };
         }
 
@@ -378,13 +414,16 @@
                 ws.close();
                 updateStatus(false);
             }
+            if (wsNotification) {
+                wsNotification.close();
+            }
         }
 
         function updateStatus(connected) {
             const status = document.getElementById('status');
             if (connected) {
                 status.className = 'status connected';
-                status.innerHTML = '<span class="status-indicator"></span>🟢 Connected & Listening';
+                status.innerHTML = '<span class="status-indicator"></span>🟢 Connected & Listening (Chat + Notifications)';
             } else {
                 status.className = 'status disconnected';
                 status.innerHTML = '<span class="status-indicator"></span>⚫ Disconnected';
@@ -395,28 +434,28 @@
             const type = data.type;
             logEvent(`📨 Event: ${type}`, 'info');
 
-            if (type === 'call_initiated') {
-                handleIncomingCall(data.call_data);
+            if (type === 'incoming_call') {
+                handleIncomingCall(data.call);
             } else if (type === 'call_answered') {
-                handleCallAnswered(data.call_data);
+                handleCallAnswered(data.call);
             } else if (type === 'call_rejected') {
-                handleCallRejected(data.call_data);
+                handleCallRejected(data.call);
             } else if (type === 'call_ended') {
-                handleCallEnded(data.call_data);
+                handleCallEnded(data.call);
             } else if (type === 'call_missed') {
-                handleCallMissed(data.call_data);
+                handleCallMissed(data.call);
             }
         }
 
         function handleIncomingCall(callData) {
-            logEvent(`📞 Incoming ${callData.call_type} call from ${callData.initiator.username}`, 'received');
+            logEvent(`📞 Incoming ${callData.call_type} call from ${callData.caller.username}`, 'received');
             displayCall(callData, 'incoming');
         }
 
         function handleCallAnswered(callData) {
             logEvent(`✅ Call answered - Status: ${callData.status}`, 'received');
             displayCall(callData, 'active');
-            startCallTimer(callData.id, callData.answered_at);
+            startCallTimer(callData.id, callData.start_time || new Date().toISOString());
         }
 
         function handleCallRejected(callData) {
@@ -425,7 +464,7 @@
         }
 
         function handleCallEnded(callData) {
-            logEvent(`📞 Call ended - Duration: ${callData.duration_seconds}s`, 'received');
+            logEvent(`📞 Call ended - Duration: ${callData.duration_seconds || 0}s`, 'received');
             removeCallUI(callData.id);
             stopCallTimer(callData.id);
         }
@@ -443,24 +482,28 @@
             const placeholder = container.querySelector('p');
             if (placeholder) placeholder.remove();
 
+            // Store or update call
+            activeCallsMap[callId] = { ...callData, state };
+
             // Check if call already displayed
             let callElement = document.getElementById(`call-${callId}`);
             if (!callElement) {
                 callElement = document.createElement('div');
                 callElement.id = `call-${callId}`;
-                callElement.className = `call-item ${state}`;
                 container.appendChild(callElement);
             }
 
-            const otherUser = state === 'incoming' ? callData.initiator : callData.receiver;
+            const otherUser = state === 'incoming' ? callData.caller : callData.receiver;
             const isOutgoing = state !== 'incoming';
 
+            // Update element
+            callElement.className = `call-item ${state}`;
             callElement.innerHTML = `
                 <div class="call-info">
                     <h4>${isOutgoing ? '📤 Outgoing' : '📥 Incoming'} ${callData.call_type} call</h4>
-                    <p><strong>With:</strong> ${otherUser.username} (${otherUser.full_name})</p>
+                    <p><strong>With:</strong> ${otherUser.username}</p>
                     <p><strong>Status:</strong> ${callData.status}</p>
-                    <p><strong>Started:</strong> ${new Date(callData.started_at).toLocaleTimeString()}</p>
+                    <p><strong>Started:</strong> ${new Date(callData.started_at || new Date()).toLocaleTimeString()}</p>
                     ${state === 'active' ? `<p class="timer">⏱️ <span id="timer-${callId}">00:00</span></p>` : ''}
                     <div style="margin-top: 5px;">
                         <span class="badge ${callData.call_type}">${callData.call_type.toUpperCase()}</span>
@@ -512,6 +555,15 @@
                 return;
             }
 
+            // Find and disable the button
+            const buttons = event.target.parentElement.querySelectorAll('button.primary');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes(callType.charAt(0).toUpperCase() + callType.slice(1))) {
+                    btn.disabled = true;
+                    btn.textContent = '⏳ Calling...';
+                }
+            });
+
             try {
                 logEvent(`📤 Initiating ${callType} call...`, 'sent');
                 const response = await fetch(
@@ -533,14 +585,33 @@
                 } else {
                     const error = await response.json();
                     logEvent(`❌ Error: ${error.error}`, 'error');
+                    alert(`Failed to initiate call: ${error.error}`);
+                    // Re-enable button
+                    buttons.forEach(btn => {
+                        if (btn.textContent.includes('Calling')) {
+                            btn.disabled = false;
+                            btn.textContent = callType === 'voice' ? '🔴 Voice Call' : '📹 Video Call';
+                        }
+                    });
                 }
             } catch (error) {
                 logEvent(`❌ Request failed: ${error.message}`, 'error');
+                alert(`Error: ${error.message}`);
+                // Re-enable button
+                buttons.forEach(btn => {
+                    if (btn.textContent.includes('Calling')) {
+                        btn.disabled = false;
+                        btn.textContent = callType === 'voice' ? '🔴 Voice Call' : '📹 Video Call';
+                    }
+                });
             }
         }
 
         async function answerCall(callId) {
             const convId = document.getElementById('convId').value;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '⏳ Answering...';
             
             try {
                 logEvent(`✅ Answering call ${callId}...`, 'sent');
@@ -556,18 +627,30 @@
                 );
 
                 if (response.ok) {
-                    logEvent(`✅ Call answered!`, 'sent');
+                    const callData = await response.json();
+                    logEvent(`✅ Call answered successfully!`, 'sent');
+                    displayCall(callData, 'active');
+                    startCallTimer(callData.id, callData.start_time || new Date().toISOString());
                 } else {
                     const error = await response.json();
                     logEvent(`❌ Error: ${error.error}`, 'error');
+                    alert(`Failed to answer call: ${error.error}`);
+                    btn.disabled = false;
+                    btn.textContent = '✅ Answer';
                 }
             } catch (error) {
                 logEvent(`❌ Request failed: ${error.message}`, 'error');
+                alert(`Error: ${error.message}`);
+                btn.disabled = false;
+                btn.textContent = '✅ Answer';
             }
         }
 
         async function rejectCall(callId) {
             const convId = document.getElementById('convId').value;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '⏳ Rejecting...';
             
             try {
                 logEvent(`❌ Rejecting call ${callId}...`, 'sent');
@@ -584,17 +667,31 @@
 
                 if (response.ok) {
                     logEvent(`❌ Call rejected!`, 'sent');
+                    const callElement = document.getElementById(`call-${callId}`);
+                    if (callElement) {
+                        callElement.style.opacity = '0.5';
+                        setTimeout(() => callElement.remove(), 300);
+                    }
                 } else {
                     const error = await response.json();
                     logEvent(`❌ Error: ${error.error}`, 'error');
+                    alert(`Failed to reject call: ${error.error}`);
+                    btn.disabled = false;
+                    btn.textContent = '❌ Reject';
                 }
             } catch (error) {
                 logEvent(`❌ Request failed: ${error.message}`, 'error');
+                alert(`Error: ${error.message}`);
+                btn.disabled = false;
+                btn.textContent = '❌ Reject';
             }
         }
 
         async function endCall(callId) {
             const convId = document.getElementById('convId').value;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '⏳ Ending...';
             
             try {
                 logEvent(`📞 Ending call ${callId}...`, 'sent');
@@ -611,12 +708,25 @@
 
                 if (response.ok) {
                     logEvent(`✅ Call ended!`, 'sent');
+                    const callData = await response.json();
+                    stopCallTimer(callData.id);
+                    const callElement = document.getElementById(`call-${callId}`);
+                    if (callElement) {
+                        callElement.style.opacity = '0.5';
+                        setTimeout(() => callElement.remove(), 300);
+                    }
                 } else {
                     const error = await response.json();
                     logEvent(`❌ Error: ${error.error}`, 'error');
+                    alert(`Failed to end call: ${error.error}`);
+                    btn.disabled = false;
+                    btn.textContent = '📞 End';
                 }
             } catch (error) {
                 logEvent(`❌ Request failed: ${error.message}`, 'error');
+                alert(`Error: ${error.message}`);
+                btn.disabled = false;
+                btn.textContent = '📞 End';
             }
         }
 

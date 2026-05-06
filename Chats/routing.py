@@ -5,4 +5,5 @@ from . import call_consumers
 websocket_urlpatterns = [
     re_path(r'ws/chat/(?P<conv_id>\d+)/$', consumers.ChatConsumer.as_asgi()),
     re_path(r'ws/call/(?P<call_id>\d+)/$', call_consumers.CallSignalingConsumer.as_asgi()),
+    re_path(r'ws/notifications/$', consumers.NotificationConsumer.as_asgi()),
 ]
